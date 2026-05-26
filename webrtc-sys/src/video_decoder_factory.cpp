@@ -20,6 +20,7 @@
 #include "api/environment/environment.h"
 #include "api/video_codecs/av1_profile.h"
 #include "api/video_codecs/sdp_video_format.h"
+#include "livekit/apple_av1_decoder_factory.h"
 #include "livekit/objc_video_factory.h"
 #include "media/base/media_constants.h"
 #include "modules/video_coding/codecs/h264/include/h264.h"
@@ -72,6 +73,7 @@ bool IsInternalH264DecoderAvailable() {
 VideoDecoderFactory::VideoDecoderFactory()
     : internal_h264_decoder_works_(IsInternalH264DecoderAvailable()) {
 #ifdef __APPLE__
+  factories_.push_back(livekit_ffi::CreateAppleAv1DecoderFactory());
   factories_.push_back(livekit_ffi::CreateObjCVideoDecoderFactory());
 #endif
 
