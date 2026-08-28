@@ -53,9 +53,11 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux
-          - os: ubuntu-latest
+            build_image: quay.io/pypa/manylinux_2_28_x86_64
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux
+            build_image: quay.io/pypa/manylinux_2_28_aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows
@@ -92,21 +94,51 @@ jobs:
         shell: bash
         run: cargo build --release --target ${{ matrix.target }} -p livekit-uniffi
 
-      # Linux: native build for x64; cross toolchain for aarch64.
+      # Linux: native build inside a manylinux container, so the cdylib links
+      # against an old-enough glibc to load on Debian 12, Ubuntu 22.04, Amazon
+      # Linux 2023, and node:*-slim images. x86_64 and aarch64 both run natively
+      # in their matching container/runner pairing, so no cross toolchain is
+      # needed here.
+      #
+      # manylinux images only expose their compiler via the image's own ENV
+      # PATH; `su -` is a login shell and resets PATH to the login default,
+      # dropping that entry. node-builds.yml hits this on the same images and
+      # works around it by installing gcc-toolset explicitly and sourcing its
+      # enable script both outside and inside the `su` block — mirrored below.
+      # livekit-uniffi doesn't link libwebrtc (no X11/GL/va/drm needs) and
+      # enables no TLS backend (no openssl-sys/native-tls/ring in its
+      # dependency tree), so gcc-toolset alone covers it; node-builds.yml's
+      # video/CUDA-related packages and clang toolchain aren't needed here.
+      # `lld` is in the install list because .cargo/config.toml forces
+      # -fuse-ld=lld for aarch64-unknown-linux-gnu unconditionally, and that
+      # applies inside the container too since the workspace (config.toml
+      # included) is bind-mounted in.
       - name: Build (Linux)
         if: ${{ matrix.platform == 'linux' }}
         run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            # .cargo/config.toml forces -fuse-ld=lld for this target to link
-            # libwebrtc; livekit-uniffi doesn't use libwebrtc. A non-empty global
-            # RUSTFLAGS overrides that per-target config, selecting the GNU bfd
-            # linker the cross binutils provides.
-            export RUSTFLAGS="-C link-arg=-fuse-ld=bfd"
-          fi
-          cargo build --release --target ${{ matrix.target }} -p livekit-uniffi
+          HOST_UID=$(id -u); HOST_GID=$(id -g)
+          docker run --rm \
+            -e TARGET=${{ matrix.target }} \
+            -e HOST_UID=$HOST_UID -e HOST_GID=$HOST_GID \
+            -v $PWD:/workspace -w /workspace \
+            ${{ matrix.build_image }} \
+            bash -lc '
+              set -euo pipefail
+              yum install -y gcc-toolset-12-gcc gcc-toolset-12-gcc-c++ gcc-toolset-12-libstdc++-devel libstdc++-devel lld
+              source /opt/rh/gcc-toolset-12/enable
+              gcc --version
+              groupadd -g "$HOST_GID" hostgroup 2>/dev/null || true
+              useradd -m -u "$HOST_UID" -g "$HOST_GID" hostuser 2>/dev/null || true
+              su - hostuser -c "
+                set -euo pipefail
+                curl --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                export PATH=\$HOME/.cargo/bin:\$PATH
+                source /opt/rh/gcc-toolset-12/enable
+                gcc --version
+                cd /workspace
+                cargo build --release --target $TARGET -p livekit-uniffi
+              "
+            '
 
       # Android: build with cargo-ndk.
       - name: Build (Android)

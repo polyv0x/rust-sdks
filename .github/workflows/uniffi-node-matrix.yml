@@ -1,0 +1,105 @@
+name: UniFFI Node native packages
+
+# Builds the five per-arch npm packages for the node bindings. Produces exactly
+# the artifacts a future publish job consumes; publishes nothing itself.
+#
+# Reuses uniffi-cdylib.yml for the cdylib builds rather than duplicating the
+# matrix. That workflow builds twelve triples to serve dart as well, so this runs
+# on main and on demand — not on every pull request. The pull-request gate is
+# uniffi-node-test.yml, which covers one host triple.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "livekit-uniffi/**"
+      - ".github/workflows/uniffi-node-matrix.yml"
+      - ".github/workflows/uniffi-cdylib.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cdylibs:
+    name: Build cdylibs
+    uses: ./.github/workflows/uniffi-cdylib.yml
+    # uniffi-cdylib.yml declares `contents: write` for its release job, and a
+    # called workflow cannot be granted more than its caller holds. Raised on
+    # this job alone so the packaging jobs below stay read-only; the release job
+    # is skipped here anyway (dry_run), but the grant is checked at call time.
+    permissions:
+      contents: write
+    with:
+      version: 0.0.0-matrix
+      tag_name: ""
+      dry_run: true
+
+  package:
+    name: Package (${{ matrix.target }})
+    needs: cdylibs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          submodules: true
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          cache: false
+          rustflags: ""
+
+      - name: Install Common Deps for UniFFI Tasks
+        uses: ./.github/actions/uniffi-deps
+
+      - name: Download cdylib
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cdylib-${{ matrix.target }}
+          path: cdylib
+
+      # The zip holds the library at its archive root under the name cargo gave
+      # it, so unpacking into the target directory is enough — nothing here needs
+      # to know the filename. Windows runners have no reliable `unzip`.
+      - name: Unpack cdylib into the target directory (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="target/${TARGET}/release"
+          mkdir -p "$dest"
+          unzip -o "cdylib/build-${TARGET}.zip" -d "$dest"
+          ls -la "$dest"
+
+      - name: Unpack cdylib into the target directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dest = "target/$env:TARGET/release"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Expand-Archive -Path "cdylib/build-$env:TARGET.zip" -DestinationPath $dest -Force
+          Get-ChildItem $dest
+
+      - name: Build native package
+        id: build
+        working-directory: livekit-uniffi
+        run: cargo make node-native-package-flow
+
+      - name: Upload native package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-native-package-${{ matrix.target }}
+          path: ${{ steps.build.outputs.package_dir }}
+          if-no-files-found: error
