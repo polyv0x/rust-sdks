@@ -1,0 +1,471 @@
+# Copyright 2026 LiveKit, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Node tasks for livekit-uniffi, extended into ../../Makefile.toml.
+#
+# cargo-make runs from the crate root regardless of where a task is defined, so
+# relative paths here are relative to livekit-uniffi/, not to this file. The
+# shared plumbing these tasks build on — build, locate-lib, pre-package,
+# post-package, tera — stays in the crate Makefile.
+
+# All four of the tasks below are used only by this flow, so they live here
+# rather than in the crate Makefile. `pre-package` in particular branches on a
+# node concept (`node-native`), which is what gave away that it was never the
+# generic infrastructure its name suggests. If another language later wants a
+# strip-free build, hoist build-for-bindgen at that point — dart and kotlin
+# currently set CARGO_PROFILE_RELEASE_STRIP inline on their own wrappers.
+
+[tasks.build-for-bindgen]
+private = true
+env = { CARGO_PROFILE_RELEASE_STRIP = "false" }
+run_task = "build"
+
+# The counterpart to build-for-bindgen, for the library that actually ships.
+# uniffi-cdylib.yml builds with the profile as declared (`strip = "symbols"`),
+# so packaging must too. Set explicitly rather than left to the profile default:
+# cargo-make env persists for the rest of the process, so within a single
+# `cargo make node-package-test` the strip=false from build-for-bindgen would
+# otherwise still be in scope here and the packaged cdylib would be unstripped —
+# an artifact no CI or publish path produces. Same wrapper + run_task shape,
+# because a task's own env is not in scope while its dependencies run.
+[tasks.build-stripped]
+private = true
+env = { CARGO_PROFILE_RELEASE_STRIP = "symbols" }
+run_task = "build"
+
+
+[tasks.pre-package]
+private = true
+script_runner = "@duckscript"
+script = """
+if eq ${LANG} "node-native"
+  package_dir = join_path ${PACKAGES_DIR} ${LANG} ${TARGET}
+else
+  package_dir = join_path ${PACKAGES_DIR} ${LANG}
+end
+mkdir ${package_dir}
+set_env PACKAGE_DIR "${package_dir}"
+if ${GITHUB_OUTPUT}
+    echo "::group::Package (${LANG})"
+end
+"""
+
+[tasks.post-package]
+private = true
+script_runner = "@duckscript"
+script = """
+echo "Created package (${LANG}, ${CARGO_MAKE_PROFILE}): ${PACKAGE_DIR}"
+if ${GITHUB_OUTPUT}
+    appendfile ${GITHUB_OUTPUT} "packages_dir=${PACKAGES_DIR}\\n"
+    appendfile ${GITHUB_OUTPUT} "package_dir=${PACKAGE_DIR}\\n"
+    echo "::endgroup::"
+end
+"""
+
+
+[env]
+NPM_NAME = "@livekit/uniffi"
+
+[env.UBRN_VERSION]
+value = "0.31.0-5"
+condition = { env_not_set = ["UBRN_VERSION"] }
+# The @ubjs/core and @ubjs/node runtime the generated TypeScript imports. The
+# generator itself is pinned by Cargo.lock via tools/bindgens, so this value covers
+# only the npm half; uniffi-node-test.yml asserts the two agree end to end.
+[env.NODE_TOOLS_DIR]
+value = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/node-tools"
+condition = { env_not_set = ["NODE_TOOLS_DIR"] }
+# Holds the pinned prettier used to format generated bindings.
+[env.VERDACCIO_VERSION]
+value = "6.7.2"
+condition = { env_not_set = ["VERDACCIO_VERSION"] }
+[env.VERDACCIO_TOOLS_DIR]
+value = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/verdaccio-tools"
+condition = { env_not_set = ["VERDACCIO_TOOLS_DIR"] }
+[env.VERDACCIO_BIN]
+value = "${VERDACCIO_TOOLS_DIR}/node_modules/.bin/verdaccio"
+condition = { env_not_set = ["VERDACCIO_BIN"] }
+
+# Runtime dir: holds the config copy, the registry storage, and the npmrc.
+[env.VERDACCIO_DIR]
+value = "${CARGO_MAKE_CRATE_TARGET_DIRECTORY}/verdaccio"
+condition = { env_not_set = ["VERDACCIO_DIR"] }
+[env.VERDACCIO_PORT]
+value = "4873"
+condition = { env_not_set = ["VERDACCIO_PORT"] }
+# 127.0.0.1 rather than localhost, on both the listen address and the registry
+# URL. `--listen <port>` alone leaves verdaccio on its default host, which it
+# resolves through /etc/hosts — on a machine where localhost is IPv6-only it
+# binds ::1, a client that dials IPv4 gets ECONNREFUSED, and a readiness check
+# resolving the same name passes over v6 and sees nothing wrong.
+[env.VERDACCIO_HOST]
+value = "127.0.0.1"
+condition = { env_not_set = ["VERDACCIO_HOST"] }
+
+[env.VERDACCIO_REGISTRY]
+value = "http://${VERDACCIO_HOST}:${VERDACCIO_PORT}/"
+condition = { env_not_set = ["VERDACCIO_REGISTRY"] }
+
+# MARK: - Node
+
+# A pnpm tool installed into its own throwaway project, pinned by a rendered
+# manifest. Both callers below want the same three steps — stage the shared
+# supply-chain policy and any static config, render the manifest, install — so
+# they share one implementation and differ only in PNPM_TOOL_SRC/PNPM_TOOL_DIR.
+#
+# Both tools live under support/node/tools because both exist only to serve this
+# flow: prettier formats the generated TypeScript, verdaccio rehearses the npm
+# publish. That is also why staging node's pnpm-workspace.common.yaml here is
+# honest rather than a leak — there is no non-node caller to mislead.
+[tasks.pnpm-tool-install]
+private = true
+description = "Install the pinned pnpm tool described by ${PNPM_TOOL_SRC} into ${PNPM_TOOL_DIR}"
+dependencies = ["install-tera"]
+script_runner = "@shell"
+script = '''
+set -e
+mkdir -p "${PNPM_TOOL_DIR}"
+cp "${SUPPORT_DIR}/node/pnpm-workspace.common.yaml" "${PNPM_TOOL_DIR}/pnpm-workspace.yaml"
+# Static config (prettier's .prettierrc, and anything else a tool ships) travels
+# as-is; only the manifest is templated, so it can carry the pinned version.
+find "${PNPM_TOOL_SRC}" -maxdepth 1 -type f ! -name '*.tera' -exec cp {} "${PNPM_TOOL_DIR}/" \;
+tera --env-only -t "${PNPM_TOOL_SRC}/package.json.tera" -o "${PNPM_TOOL_DIR}/package.json"
+cd "${PNPM_TOOL_DIR}"
+# Not --ignore-workspace: that would discard the policy staged above.
+pnpm install
+'''
+
+[tasks.node-tools-install]
+private = true
+description = "Install the pinned prettier used to format generated bindings"
+env = { PNPM_TOOL_SRC = "${SUPPORT_DIR}/node/tools/prettier", PNPM_TOOL_DIR = "${NODE_TOOLS_DIR}" }
+run_task = "pnpm-tool-install"
+
+[tasks.node-registry-tools-install]
+private = true
+description = "Install the pinned verdaccio used by the publish-shape rehearsal"
+env = { PNPM_TOOL_SRC = "${SUPPORT_DIR}/node/tools/verdaccio", PNPM_TOOL_DIR = "${VERDACCIO_TOOLS_DIR}" }
+run_task = "pnpm-tool-install"
+
+[tasks.node-bindgen]
+private = true
+description = "Generate NAPI bindings into ${PACKAGE_DIR}/src/generated"
+dependencies = ["build-for-bindgen", "locate-lib"]
+script_runner = "@shell"
+script = """
+rm -rf ${PACKAGE_DIR}/src/generated
+cargo run -p bindgens --bin uniffi-bindgen-react-native -- generate napi bindings \
+    --library \
+    --lib-package-base ${NPM_NAME} \
+    --lib-node-triple \
+    --no-format \
+    --crate ${CARGO_MAKE_CRATE_FS_NAME} \
+    --ts-dir ${PACKAGE_DIR}/src/generated \
+    ${LIB_PATH}
+"""
+# `-p bindgens` is required: this task's cwd is the livekit-uniffi crate, which
+# defines its own `uniffi-bindgen` bin, and `cargo run --bin` resolves against the
+# current package only.
+# --lib-package-base appends a `-` because @livekit/uniffi ends alphanumeric, so
+# the bindings resolve `@livekit/uniffi-<node-triple>`. --no-format: formatting is
+# node-bindgen-format's job, with a pinned prettier.
+
+# livekit_uniffi's cdylib bundles multiple uniffi namespaces (livekit_common,
+# livekit_datatrack, livekit_net, livekit_uniffi) into one physical library. ubrn
+# generates one `*-ffi.ts` per namespace, and each independently resolves its
+# native library by `crateName` — left alone, each would look for a dylib named
+# after its own namespace instead of the one cdylib that actually exists. The
+# `*-ffi.ts` files are @ts-nocheck-ed generated code; this task deliberately
+# rewrites them post-generation so every namespace resolves the umbrella crate's
+# library instead. It errors out if nothing matched: a silent no-op here would
+# mean ubrn's output shape changed underneath us, and the generated bindings
+# would resolve nowhere without any signal.
+[tasks.node-fixup-crate-name]
+private = true
+description = "Rewrite generated crateName values so every uniffi namespace resolves the umbrella cdylib"
+dependencies = ["node-bindgen"]
+script_runner = "@shell"
+script = '''
+node -e '
+const fs = require("fs");
+const path = require("path");
+const dir = path.join(process.env.PACKAGE_DIR, "src", "generated");
+const crate = process.env.CARGO_MAKE_CRATE_FS_NAME;
+const files = fs.readdirSync(dir).filter((f) => f.endsWith("-ffi.ts"));
+const pattern = /crateName: "[^"]*"/g;
+let total = 0;
+const untouched = [];
+for (const file of files) {
+  const p = path.join(dir, file);
+  const src = fs.readFileSync(p, "utf8");
+  let hits = 0;
+  const out = src.replace(pattern, () => {
+    hits += 1;
+    return `crateName: "${crate}"`;
+  });
+  // Per file, not just overall: each namespace resolves the cdylib on its own,
+  // so one file silently missing its rewrite is one namespace that fails at
+  // import in a consumer. A total count would be satisfied by its siblings.
+  if (hits === 0) untouched.push(file);
+  total += hits;
+  fs.writeFileSync(p, out);
+}
+if (files.length === 0 || untouched.length > 0) {
+  const what = files.length === 0 ? "no *-ffi.ts files" : `no crateName in ${untouched.join(", ")}`;
+  console.error(`node-fixup-crate-name: ${what} under ${dir} — ubrn output format may have changed`);
+  process.exit(1);
+}
+console.error(`node-fixup-crate-name: rewrote ${total} crateName occurrence(s) to "${crate}"`);
+'
+'''
+
+[tasks.node-bindgen-format]
+private = true
+dependencies = ["node-fixup-crate-name", "node-tools-install"]
+script_runner = "@shell"
+script = "pnpm --dir ${NODE_TOOLS_DIR} run format-bindings"
+
+[tasks.node-generate-manifest]
+private = true
+extend = "tera"
+args = ["--env-only", "-t", "${SUPPORT_DIR}/node/package.json.tera", "-o", "${PACKAGE_DIR}/package.json"]
+
+[tasks.node-copy-support-files]
+private = true
+script_runner = "@shell"
+script = """
+cp ${SUPPORT_DIR}/node/tsconfig.json ${PACKAGE_DIR}/tsconfig.json
+cp ${SUPPORT_DIR}/node/tsup.config.ts ${PACKAGE_DIR}/tsup.config.ts
+cp ${SUPPORT_DIR}/node/index.ts ${PACKAGE_DIR}/src/index.ts
+"""
+
+[tasks.node-package-flow]
+private = true
+dependencies = [
+    "pre-package",
+    "node-bindgen",
+    "node-bindgen-format",
+    "node-generate-manifest",
+    "node-copy-support-files",
+    "post-package",
+]
+
+[tasks.node-package]
+description = "Build the main @livekit/uniffi npm package"
+env = { LANG = "node" }
+run_task = "node-package-flow"
+
+# --- Per-arch native packages
+
+[tasks.node-native-package-copy-lib]
+private = true
+dependencies = ["locate-lib"]
+script_runner = "@duckscript"
+script = """
+dst = join_path ${PACKAGE_DIR} ${LIB_FILENAME}
+cp ${LIB_PATH} ${dst}
+"""
+
+[tasks.node-native-package-generate-manifest]
+private = true
+extend = "tera"
+args = ["--env-only", "-t", "${SUPPORT_DIR}/node/native/package.json.tera", "-o", "${PACKAGE_DIR}/package.json"]
+
+[tasks.node-native-package-generate-readme]
+private = true
+extend = "tera"
+args = ["--env-only", "-t", "${SUPPORT_DIR}/node/native/README.md.tera", "-o", "${PACKAGE_DIR}/README.md"]
+
+# A task's own env only applies once its own dependencies have run (see
+# build-for-bindgen above), so the dependency chain below lives on a private
+# task and this one only sets env and hands off via run_task. Collapsing the two
+# does not degrade gracefully: the manifest/readme renders abort with
+# `Variable NODE_TRIPLE not found in context` from tera, and pre-package — which
+# branches on ${LANG} — instead sees the ambient POSIX locale LANG, taking the
+# non-node-native branch and resolving ${PACKAGES_DIR}/en_GB.UTF-8 (and
+# ./support/en_GB.UTF-8) rather than ${PACKAGES_DIR}/node-native/${TARGET}. That
+# LANG collision is why every packaging flow here sets LANG on a wrapper task.
+[tasks.node-native-package-flow-run]
+private = true
+dependencies = [
+    "pre-package",
+    "node-native-package-copy-lib",
+    "node-native-package-generate-manifest",
+    "node-native-package-generate-readme",
+    "post-package",
+]
+
+# Public, and carries its own env, so CI can package a cdylib it already
+# downloaded without `build` recompiling it (see Task 8).
+[tasks.node-native-package-flow]
+description = "Package an already-built cdylib as a per-arch npm package; TARGET selects the triple"
+run_task = "node-native-package-flow-run"
+
+[tasks.node-native-package-flow.env]
+LANG = "node-native"
+
+# npm's os/cpu fields and the package-name triple all derive from the cargo
+# target. @ubjs/node's detectNodeTriple computes the same names at load time, so
+# these tables and that function must agree.
+[tasks.node-native-package-flow.env.NODE_CPU]
+source = "${TARGET}"
+[tasks.node-native-package-flow.env.NODE_CPU.mapping]
+"aarch64-apple-darwin"      = "arm64"
+"x86_64-apple-darwin"       = "x64"
+"aarch64-unknown-linux-gnu" = "arm64"
+"x86_64-unknown-linux-gnu"  = "x64"
+"x86_64-pc-windows-msvc"    = "x64"
+
+[tasks.node-native-package-flow.env.NODE_OS]
+source = "${TARGET}"
+[tasks.node-native-package-flow.env.NODE_OS.mapping]
+"aarch64-apple-darwin"      = "darwin"
+"x86_64-apple-darwin"       = "darwin"
+"aarch64-unknown-linux-gnu" = "linux"
+"x86_64-unknown-linux-gnu"  = "linux"
+"x86_64-pc-windows-msvc"    = "win32"
+
+[tasks.node-native-package-flow.env.NODE_TRIPLE]
+source = "${TARGET}"
+[tasks.node-native-package-flow.env.NODE_TRIPLE.mapping]
+"aarch64-apple-darwin"      = "darwin-arm64"
+"x86_64-apple-darwin"       = "darwin-x64"
+"aarch64-unknown-linux-gnu" = "linux-arm64-gnu"
+"x86_64-unknown-linux-gnu"  = "linux-x64-gnu"
+"x86_64-pc-windows-msvc"    = "win32-x64-msvc"
+
+# build-stripped, not build: this is the package that ships, so it must carry the
+# same stripped cdylib uniffi-cdylib.yml produces. node-native-package-flow (the
+# CI entry point) skips the build entirely and packages a downloaded artifact.
+[tasks.node-native-package]
+description = "Scaffold a per-arch native npm package (cdylib next to package.json)"
+dependencies = ["build-stripped"]
+run_task = "node-native-package-flow"
+
+# --- Workspace assembly and end-to-end tests
+
+[tasks.node-setup-workspace]
+description = "Write target/packages/pnpm-workspace.yaml so main + per-arch packages share a workspace"
+script_runner = "@shell"
+script = """
+{
+cat ${SUPPORT_DIR}/node/pnpm-workspace.common.yaml
+cat <<'EOF'
+
+packages:
+  - "node"
+  - "node-native/*"
+
+# Resolve the plain-version sibling optionalDependencies from the workspace, not
+# npm. Without `deep`, pnpm fetches a published copy whose shape may differ.
+linkWorkspacePackages: deep
+EOF
+} > ${PACKAGES_DIR}/pnpm-workspace.yaml
+"""
+
+[tasks.node-package-build]
+private = true
+cwd = "${PACKAGES_DIR}"
+script_runner = "@shell"
+script = """
+pnpm install
+pnpm --filter ${NPM_NAME} run build
+"""
+
+[tasks.node-package-test]
+description = "Build the node packages and run the smoke test against them"
+dependencies = ["node-package", "node-native-package", "node-setup-workspace", "node-package-build"]
+cwd = "./support/node/test"
+script_runner = "@shell"
+script = "./run.sh"
+
+# Smoke-test the publish shape via a throwaway local registry. Publishes the main
+# + host per-arch packages to verdaccio (real versions, no rewriting) and installs
+# @livekit/uniffi as a real consumer would, so @ubjs/node's resolveLibPath runs
+# against registry-resolved packages — the exact path a published install takes.
+#
+# Shared by the local entry point (node-registry-test) and CI's gate job. The
+# caller builds dist/ and points this at the package dirs; this task owns the
+# registry lifecycle and the consumer install.
+#
+# Required env vars:
+#   MAIN_PKG_DIR    built main package dir (contains dist/ and package.json)
+#   NATIVE_PKG_DIR  built host per-arch package dir
+[tasks.node-registry-run]
+description = "Publish MAIN_PKG_DIR + NATIVE_PKG_DIR to a throwaway verdaccio and smoke-test a consumer install"
+dependencies = ["node-registry-tools-install"]
+script_runner = "@shell"
+script = """
+set -e
+[ -n "$MAIN_PKG_DIR" ]   || { echo "MAIN_PKG_DIR required (built main package dir)" >&2; exit 1; }
+[ -n "$NATIVE_PKG_DIR" ] || { echo "NATIVE_PKG_DIR required (built host per-arch package dir)" >&2; exit 1; }
+
+# Fresh registry state + config copy (storage resolves next to the copy).
+rm -rf ${VERDACCIO_DIR}
+mkdir -p ${VERDACCIO_DIR}
+cp ${SUPPORT_DIR}/node/tools/verdaccio/config.yaml ${VERDACCIO_DIR}/config.yaml
+
+# Launch verdaccio, ensuring it's torn down however this script exits.
+${VERDACCIO_BIN} --config ${VERDACCIO_DIR}/config.yaml --listen ${VERDACCIO_HOST}:${VERDACCIO_PORT} \
+    > ${VERDACCIO_DIR}/server.log 2>&1 &
+VERDACCIO_PID=$!
+# Reap before returning, not just signal: VERDACCIO_PORT is fixed, so a run that
+# exits while the old server still holds the socket makes the next one fail with
+# EADDRINUSE. SIGTERM, a short grace period, then SIGKILL for a wedged server.
+verdaccio_teardown() {
+  kill "$VERDACCIO_PID" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ] && kill -0 "$VERDACCIO_PID" 2>/dev/null; do
+    sleep 0.2
+    i=$((i + 1))
+  done
+  kill -9 "$VERDACCIO_PID" 2>/dev/null || true
+  wait "$VERDACCIO_PID" 2>/dev/null || true
+}
+trap verdaccio_teardown EXIT INT TERM
+curl -s --retry 30 --retry-all-errors --retry-connrefused --retry-delay 1 \
+    --max-time 90 -o /dev/null ${VERDACCIO_REGISTRY} \
+    || { echo "verdaccio did not come up"; cat ${VERDACCIO_DIR}/server.log; exit 1; }
+
+# Anonymous-publish npmrc (verdaccio's $all access ignores the token value).
+NPMRC=${VERDACCIO_DIR}/.npmrc
+printf 'registry=%s\\n//%s:%s/:_authToken=anon\\n' "${VERDACCIO_REGISTRY}" "${VERDACCIO_HOST}" "${VERDACCIO_PORT}" > "$NPMRC"
+export NPM_CONFIG_USERCONFIG="$NPMRC"
+
+# Publish the already-built packages as-is. --ignore-scripts: dist/ is built by
+# the caller, and we're testing the published shape, not re-running the build.
+( cd "$NATIVE_PKG_DIR" && pnpm publish --registry ${VERDACCIO_REGISTRY} --no-git-checks --ignore-scripts )
+( cd "$MAIN_PKG_DIR"   && pnpm publish --registry ${VERDACCIO_REGISTRY} --no-git-checks --ignore-scripts )
+
+# Install from the registry as a consumer would (plain version range, no file:
+# refs) and run the smoke test.
+cd ${CARGO_MAKE_WORKING_DIRECTORY}/support/node/registry-test
+cp "$NPMRC" .npmrc
+cp ${CARGO_MAKE_WORKING_DIRECTORY}/support/node/pnpm-workspace.common.yaml pnpm-workspace.yaml
+rm -rf node_modules pnpm-lock.yaml
+pnpm install --ignore-scripts
+./run.sh
+"""
+
+[tasks.node-registry-test]
+description = "Build, then publish to a throwaway local registry and smoke-test a consumer install"
+dependencies = ["node-package", "node-native-package", "node-setup-workspace", "node-package-build"]
+script_runner = "@shell"
+script = """
+set -e
+export MAIN_PKG_DIR=${PACKAGES_DIR}/node
+export NATIVE_PKG_DIR=${PACKAGES_DIR}/node-native/${TARGET}
+cd ${CARGO_MAKE_WORKING_DIRECTORY}
+cargo make node-registry-run
+"""

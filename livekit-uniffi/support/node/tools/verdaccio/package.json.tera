@@ -1,0 +1,8 @@
+{
+  "name": "_verdaccio-tools",
+  "private": true,
+  "version": "0.0.0",
+  "devDependencies": {
+    "verdaccio": "{{ VERDACCIO_VERSION }}"
+  }
+}

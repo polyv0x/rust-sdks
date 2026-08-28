@@ -1,0 +1,11 @@
+{
+  "name": "_node-bindgen-format-tools",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "format-bindings": "prettier --write --config ./.prettierrc --no-error-on-unmatched-pattern \"../packages/node/src/generated/**/*.{ts,js,json}\""
+  },
+  "devDependencies": {
+    "prettier": "3.8.3"
+  }
+}

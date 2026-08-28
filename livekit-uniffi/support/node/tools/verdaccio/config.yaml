@@ -1,0 +1,35 @@
+# Throwaway local registry for the publish-shape smoke test (node-registry-run).
+# Copied to ${VERDACCIO_DIR}/config.yaml at run time; `storage` resolves relative
+# to that copy, so registry state lands under target/, not the source tree.
+storage: ./storage
+
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+
+# The per-arch packages ship the cdylib, which blows past verdaccio's 10mb default.
+max_body_size: 500mb
+
+packages:
+  # Our packages are local-only (no npm proxy) so a stale published copy can
+  # never shadow the freshly-published one under test. Anonymous publish is fine:
+  # this registry is ephemeral and never reachable off-box.
+  '@livekit/uniffi':
+    access: $all
+    publish: $all
+    unpublish: $all
+  '@livekit/uniffi-*':
+    access: $all
+    publish: $all
+    unpublish: $all
+  # Everything else proxies to npm so the consumer's other deps still install.
+  '@*/*':
+    access: $all
+    publish: $all
+    proxy: npmjs
+  '**':
+    access: $all
+    publish: $all
+    proxy: npmjs
+
+log: { type: stdout, format: pretty, level: warn }
