@@ -165,6 +165,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - bump libwebrtc to m125
+## 0.3.44 (2026-08-31)
+
+### Fixes
+
+- Fix pre-encoded frame segfault on macOS
+
 ## 0.3.43 (2026-08-25)
 
 ### Fixes

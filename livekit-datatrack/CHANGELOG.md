@@ -1,4 +1,10 @@
 # Changelog
+## 0.1.15 (2026-08-31)
+
+### Features
+
+- Removes livekit-runtime and converts this package to be tokio only again - #1375 (@1egoman)
+
 ## 0.1.14 (2026-08-25)
 
 ### Fixes
