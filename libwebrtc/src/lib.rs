@@ -70,6 +70,10 @@ pub mod video_track;
 pub mod native {
     pub use webrtc_sys::webrtc::ffi::create_random_uuid;
 
+    pub fn time_micros() -> i64 {
+        webrtc_sys::webrtc::ffi::time_micros()
+    }
+
     pub use crate::imp::{
         apm, audio_mixer, audio_resampler, frame_cryptor, packet_trailer, yuv_helper,
     };

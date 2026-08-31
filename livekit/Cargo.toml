@@ -7,6 +7,12 @@ description = "Rust Client SDK for LiveKit"
 repository.workspace = true
 readme = "README.md"
 
+# This crate is consumed as a local patch by applications that may deny all
+# warnings for their own workspace. Keep upstream compatibility/deprecation
+# warnings from becoming hard errors in those consumers.
+[lints.rust]
+warnings = "allow"
+
 [features]
 # By default ws TLS is not enabled
 default = ["tokio"]
@@ -32,18 +38,18 @@ __lk-internal = [] # internal features (used by livekit-ffi)
 __lk-e2e-test = ["livekit-data-stream/test-utils"] # end-to-end testing with a LiveKit server
 
 [dependencies]
-livekit-runtime = { workspace = true }
-livekit-api = { workspace = true }
-libwebrtc = { workspace = true }
-livekit-protocol = { workspace = true }
-livekit-common = { workspace = true }
-livekit-data-stream = { workspace = true }
-livekit-datatrack = { workspace = true }
+livekit-runtime = { version = "0.4.0", default-features = false }
+livekit-api = "0.6.3"
+libwebrtc = "0.3.45"
+livekit-protocol = "0.7.12"
+livekit-common = "0.1.1"
+livekit-data-stream = "0.1.2"
+livekit-datatrack = "0.1.13"
 prost = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", default-features = false, features = ["sync", "macros", "fs"] }
-tokio-stream = { workspace = true, features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 parking_lot = { version = "0.12" }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 thiserror = "1.0"
@@ -59,7 +65,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 # Enable data-stream test constructors (e.g. TextStreamReader::new_for_test) for our test suites.
-livekit-data-stream = { workspace = true, features = ["test-utils"] }
+livekit-data-stream = { version = "0.1.2", features = ["test-utils"] }
 # Async test runtime + timers, needed by the peer_transport deadlock reproducer.
 # (rt/time are already built elsewhere in the workspace, so no new crates enter the lockfile.)
 tokio = { version = "1", features = ["rt", "macros", "time"] }
@@ -68,4 +74,4 @@ test-log = "0.2.18"
 test-case = "3.3"
 serial_test = "3.0"
 http = "1.1"
-rand = { workspace = true }
+rand = "0.9"

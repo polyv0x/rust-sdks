@@ -29,6 +29,7 @@
 #include "rtc_base/logging.h"
 #include "rtc_base/crypto_random.h"
 #include "rtc_base/synchronization/mutex.h"
+#include "rtc_base/time_utils.h"
 
 #ifdef WEBRTC_WIN
 #include "rtc_base/win32.h"
@@ -171,6 +172,10 @@ std::unique_ptr<LogSink> new_log_sink(
 
 rust::String create_random_uuid() {
   return webrtc::CreateRandomUuid();
+}
+
+int64_t time_micros() {
+  return webrtc::TimeMicros();
 }
 
 }  // namespace livekit_ffi
