@@ -183,6 +183,7 @@ std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::Create(
 
 #if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
   if (absl::EqualsIgnoreCase(format.name, webrtc::kAv1CodecName)) {
+    RTC_LOG(LS_WARNING) << "Using dav1d software decoder for AV1";
     return webrtc::CreateDav1dDecoder();
   }
 #endif
