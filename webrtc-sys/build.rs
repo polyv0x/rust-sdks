@@ -97,6 +97,7 @@ fn main() {
         "src/apm.cpp",
         "src/audio_mixer.cpp",
         "src/av1_bitstream.cpp",
+        "src/av1_frame_cryptor.cpp",
         "src/packet_trailer.cpp",
         "src/packet_trailer_av1.cpp",
     ]);
@@ -334,6 +335,7 @@ fn main() {
             configure_darwin_sysroot(&mut builder);
 
             builder
+                .define("RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY", None)
                 .file("src/apple_av1_decoder_factory.mm")
                 .file("src/objc_video_factory.mm")
                 .file("src/objc_video_frame_buffer.mm")

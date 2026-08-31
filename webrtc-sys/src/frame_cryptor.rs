@@ -144,6 +144,8 @@ pub mod ffi {
 
         pub fn unregister_observer(self: &FrameCryptor);
 
+        pub fn set_encoded_video_frame_observer_enabled(self: &FrameCryptor, enabled: bool);
+
         pub fn set_packet_trailer_handler(
             self: &FrameCryptor,
             handler: SharedPtr<PacketTrailerHandler>,
@@ -182,6 +184,15 @@ pub mod ffi {
             participant_id: String,
             state: FrameCryptionState,
         );
+
+        fn on_encoded_video_frame(
+            self: &RtcFrameCryptorObserverWrapper,
+            mime_type: String,
+            timestamp: u32,
+            ssrc: u32,
+            key_frame: bool,
+            data: Vec<u8>,
+        );
     }
 } // namespace livekit_ffi
 
@@ -196,6 +207,15 @@ pub use ffi::EncryptedPacket;
 
 pub trait RtcFrameCryptorObserver: Send + Sync {
     fn on_frame_cryption_state_change(&self, participant_id: String, state: FrameCryptionState);
+
+    fn on_encoded_video_frame(
+        &self,
+        mime_type: String,
+        timestamp: u32,
+        ssrc: u32,
+        key_frame: bool,
+        data: Vec<u8>,
+    );
 }
 
 pub struct RtcFrameCryptorObserverWrapper {
@@ -213,6 +233,17 @@ impl RtcFrameCryptorObserverWrapper {
         state: FrameCryptionState,
     ) {
         self.observer.on_frame_cryption_state_change(participant_id, state);
+    }
+
+    fn on_encoded_video_frame(
+        self: &RtcFrameCryptorObserverWrapper,
+        mime_type: String,
+        timestamp: u32,
+        ssrc: u32,
+        key_frame: bool,
+        data: Vec<u8>,
+    ) {
+        self.observer.on_encoded_video_frame(mime_type, timestamp, ssrc, key_frame, data);
     }
 }
 

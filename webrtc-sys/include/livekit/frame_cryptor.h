@@ -40,6 +40,8 @@ enum class Algorithm : ::std::int32_t;
 class RtcFrameCryptorObserverWrapper;
 class NativeFrameCryptorObserver;
 class PacketTrailerHandler;
+class Av1FrameCryptorTransformer;
+class EncodedVideoFrameTapTransformer;
 
 /// Shared secret key for frame encryption.
 class KeyProvider {
@@ -118,7 +120,9 @@ class KeyProvider {
     impl_->SetSifTrailer(trailer_vec);
   }
 
-  webrtc::scoped_refptr<webrtc::KeyProvider> rtc_key_provider() { return impl_; }
+  webrtc::scoped_refptr<webrtc::KeyProvider> rtc_key_provider() {
+    return impl_;
+  }
 
  private:
   webrtc::scoped_refptr<webrtc::DefaultKeyProviderImpl> impl_;
@@ -159,6 +163,10 @@ class FrameCryptor {
 
   void unregister_observer() const;
 
+  /// Enable delivery of post-decryption encoded video frames to the observer.
+  /// Disabled by default so unwatched tracks do not incur a frame copy.
+  void set_encoded_video_frame_observer_enabled(bool enabled) const;
+
   /// Attach a packet trailer transformer for chained processing.
   void set_packet_trailer_handler(
       std::shared_ptr<PacketTrailerHandler> handler) const;
@@ -168,10 +176,16 @@ class FrameCryptor {
   const rust::String participant_id_;
   mutable webrtc::Mutex mutex_;
   webrtc::scoped_refptr<webrtc::FrameCryptorTransformer> e2ee_transformer_;
+  webrtc::scoped_refptr<Av1FrameCryptorTransformer> av1_e2ee_transformer_;
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface> crypto_transformer_;
   webrtc::scoped_refptr<webrtc::KeyProvider> key_provider_;
   webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_;
   webrtc::scoped_refptr<webrtc::RtpReceiverInterface> receiver_;
   mutable webrtc::scoped_refptr<NativeFrameCryptorObserver> observer_;
+  webrtc::scoped_refptr<EncodedVideoFrameTapTransformer>
+      encoded_video_frame_tap_;
+  webrtc::scoped_refptr<webrtc::FrameTransformerInterface>
+      receiver_transformer_;
   mutable webrtc::scoped_refptr<webrtc::FrameTransformerInterface>
       chained_transformer_;
 };
@@ -186,6 +200,12 @@ class NativeFrameCryptorObserver
   void OnFrameCryptionStateChanged(const std::string participant_id,
                                    webrtc::FrameCryptionState error) override;
 
+  void OnEncodedVideoFrame(const std::string mime_type,
+                           uint32_t timestamp,
+                           uint32_t ssrc,
+                           bool key_frame,
+                           webrtc::ArrayView<const uint8_t> data);
+
  private:
   rust::Box<RtcFrameCryptorObserverWrapper> observer_;
   const FrameCryptor* fc_;
@@ -194,12 +214,11 @@ class NativeFrameCryptorObserver
 class DataPacketCryptor {
  public:
   DataPacketCryptor(webrtc::FrameCryptorTransformer::Algorithm algorithm,
-                   webrtc::scoped_refptr<webrtc::KeyProvider> key_provider);
+                    webrtc::scoped_refptr<webrtc::KeyProvider> key_provider);
 
-  EncryptedPacket encrypt_data_packet(
-      const ::rust::String participant_id,
-      uint32_t key_index,
-      rust::Vec<::std::uint8_t> data) const;
+  EncryptedPacket encrypt_data_packet(const ::rust::String participant_id,
+                                      uint32_t key_index,
+                                      rust::Vec<::std::uint8_t> data) const;
 
   rust::Vec<::std::uint8_t> decrypt_data_packet(
       const ::rust::String participant_id,

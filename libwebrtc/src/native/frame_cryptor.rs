@@ -24,6 +24,16 @@ use crate::{
 };
 
 pub type OnStateChange = Box<dyn FnMut(String, EncryptionState) + Send + Sync>;
+pub type OnEncodedVideoFrame = Box<dyn FnMut(EncodedVideoFrame) + Send + Sync>;
+
+#[derive(Debug, Clone)]
+pub struct EncodedVideoFrame {
+    pub mime_type: String,
+    pub timestamp: u32,
+    pub ssrc: u32,
+    pub key_frame: bool,
+    pub data: Vec<u8>,
+}
 
 #[derive(Copy, Clone, Debug)]
 #[non_exhaustive]
@@ -186,6 +196,16 @@ impl FrameCryptor {
         *self.observer.state_change_handler.lock() = handler;
     }
 
+    pub fn on_encoded_video_frame(&self, handler: Option<OnEncodedVideoFrame>) {
+        if handler.is_some() {
+            *self.observer.encoded_video_frame_handler.lock() = handler;
+            self.sys_handle.set_encoded_video_frame_observer_enabled(true);
+        } else {
+            self.sys_handle.set_encoded_video_frame_observer_enabled(false);
+            *self.observer.encoded_video_frame_handler.lock() = None;
+        }
+    }
+
     pub fn set_packet_trailer_handler(&self, handler: &PacketTrailerHandler) {
         self.sys_handle.set_packet_trailer_handler(handler.sys_handle());
     }
@@ -237,6 +257,7 @@ impl DataPacketCryptor {
 #[derive(Default)]
 struct RtcFrameCryptorObserver {
     state_change_handler: Mutex<Option<OnStateChange>>,
+    encoded_video_frame_handler: Mutex<Option<OnEncodedVideoFrame>>,
 }
 
 impl sys_fc::RtcFrameCryptorObserver for RtcFrameCryptorObserver {
@@ -248,6 +269,20 @@ impl sys_fc::RtcFrameCryptorObserver for RtcFrameCryptorObserver {
         let mut handler = self.state_change_handler.lock();
         if let Some(f) = handler.as_mut() {
             f(participant_id, state.into());
+        }
+    }
+
+    fn on_encoded_video_frame(
+        &self,
+        mime_type: String,
+        timestamp: u32,
+        ssrc: u32,
+        key_frame: bool,
+        data: Vec<u8>,
+    ) {
+        let mut handler = self.encoded_video_frame_handler.lock();
+        if let Some(f) = handler.as_mut() {
+            f(EncodedVideoFrame { mime_type, timestamp, ssrc, key_frame, data });
         }
     }
 }

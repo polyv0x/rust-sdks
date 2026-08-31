@@ -17,12 +17,15 @@
 #include "livekit/frame_cryptor.h"
 
 #include <memory>
+#include <map>
+#include <utility>
 
 #include "absl/types/optional.h"
 #include "api/make_ref_counted.h"
+#include "av1_frame_cryptor.h"
+#include "livekit/packet_trailer.h"
 #include "livekit/peer_connection.h"
 #include "livekit/peer_connection_factory.h"
-#include "livekit/packet_trailer.h"
 #include "livekit/webrtc.h"
 #include "rtc_base/thread.h"
 #include "webrtc-sys/src/frame_cryptor.rs.h"
@@ -43,7 +46,8 @@ class ChainedFrameTransformer : public webrtc::FrameTransformerInterface,
   }
 
   void RegisterTransformedFrameCallback(
-      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback) override {
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback)
+      override {
     second_->RegisterTransformedFrameCallback(callback);
     first_->RegisterTransformedFrameCallback(
         webrtc::scoped_refptr<webrtc::TransformedFrameCallback>(this));
@@ -75,6 +79,81 @@ class ChainedFrameTransformer : public webrtc::FrameTransformerInterface,
  private:
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> first_;
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> second_;
+};
+
+class EncodedVideoFrameTapTransformer
+    : public webrtc::FrameTransformerInterface {
+ public:
+  void Transform(
+      std::unique_ptr<webrtc::TransformableFrameInterface> frame) override {
+    webrtc::scoped_refptr<NativeFrameCryptorObserver> observer;
+    {
+      webrtc::MutexLock lock(&observer_mutex_);
+      observer = observer_;
+    }
+    if (observer &&
+        frame->GetDirection() ==
+            webrtc::TransformableFrameInterface::Direction::kReceiver) {
+      const auto* video_frame =
+          static_cast<const webrtc::TransformableVideoFrameInterface*>(
+              frame.get());
+      observer->OnEncodedVideoFrame(
+          frame->GetMimeType(), frame->GetTimestamp(), frame->GetSsrc(),
+          video_frame->IsKeyFrame(), frame->GetData());
+    }
+
+    auto callback = CallbackFor(frame->GetSsrc());
+    if (callback) {
+      callback->OnTransformedFrame(std::move(frame));
+    }
+  }
+
+  void RegisterTransformedFrameCallback(
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback)
+      override {
+    webrtc::MutexLock lock(&callback_mutex_);
+    callback_ = std::move(callback);
+  }
+
+  void UnregisterTransformedFrameCallback() override {
+    webrtc::MutexLock lock(&callback_mutex_);
+    callback_ = nullptr;
+  }
+
+  void RegisterTransformedFrameSinkCallback(
+      webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback,
+      uint32_t ssrc) override {
+    webrtc::MutexLock lock(&callback_mutex_);
+    sink_callbacks_[ssrc] = std::move(callback);
+  }
+
+  void UnregisterTransformedFrameSinkCallback(uint32_t ssrc) override {
+    webrtc::MutexLock lock(&callback_mutex_);
+    sink_callbacks_.erase(ssrc);
+  }
+
+  void SetObserver(
+      webrtc::scoped_refptr<NativeFrameCryptorObserver> observer) {
+    webrtc::MutexLock lock(&observer_mutex_);
+    observer_ = std::move(observer);
+  }
+
+ private:
+  webrtc::scoped_refptr<webrtc::TransformedFrameCallback> CallbackFor(
+      uint32_t ssrc) const {
+    webrtc::MutexLock lock(&callback_mutex_);
+    auto it = sink_callbacks_.find(ssrc);
+    return it == sink_callbacks_.end() ? callback_ : it->second;
+  }
+
+  mutable webrtc::Mutex callback_mutex_;
+  mutable webrtc::Mutex observer_mutex_;
+  webrtc::scoped_refptr<webrtc::TransformedFrameCallback> callback_
+      RTC_GUARDED_BY(callback_mutex_);
+  std::map<uint32_t, webrtc::scoped_refptr<webrtc::TransformedFrameCallback>>
+      sink_callbacks_ RTC_GUARDED_BY(callback_mutex_);
+  webrtc::scoped_refptr<NativeFrameCryptorObserver> observer_
+      RTC_GUARDED_BY(observer_mutex_);
 };
 
 webrtc::FrameCryptorTransformer::Algorithm AlgorithmToFrameCryptorAlgorithm(
@@ -139,8 +218,14 @@ FrameCryptor::FrameCryptor(
       new webrtc::FrameCryptorTransformer(rtc_runtime->signaling_thread(),
                                           participant_id, mediaType, algorithm,
                                           key_provider_));
-  sender->SetEncoderToPacketizerFrameTransformer(e2ee_transformer_);
+  av1_e2ee_transformer_ = webrtc::make_ref_counted<Av1FrameCryptorTransformer>(
+      rtc_runtime->signaling_thread(), participant_id, algorithm,
+      key_provider_);
+  crypto_transformer_ = webrtc::make_ref_counted<CodecDispatchFrameTransformer>(
+      e2ee_transformer_, av1_e2ee_transformer_);
+  sender->SetEncoderToPacketizerFrameTransformer(crypto_transformer_);
   e2ee_transformer_->SetEnabled(false);
+  av1_e2ee_transformer_->SetEnabled(false);
 }
 
 FrameCryptor::FrameCryptor(
@@ -161,8 +246,23 @@ FrameCryptor::FrameCryptor(
       new webrtc::FrameCryptorTransformer(rtc_runtime->signaling_thread(),
                                           participant_id, mediaType, algorithm,
                                           key_provider_));
-  receiver->SetDepacketizerToDecoderFrameTransformer(e2ee_transformer_);
+  av1_e2ee_transformer_ = webrtc::make_ref_counted<Av1FrameCryptorTransformer>(
+      rtc_runtime->signaling_thread(), participant_id, algorithm,
+      key_provider_);
+  crypto_transformer_ = webrtc::make_ref_counted<CodecDispatchFrameTransformer>(
+      e2ee_transformer_, av1_e2ee_transformer_);
+  if (mediaType ==
+      webrtc::FrameCryptorTransformer::MediaType::kVideoFrame) {
+    encoded_video_frame_tap_ =
+        webrtc::make_ref_counted<EncodedVideoFrameTapTransformer>();
+    receiver_transformer_ = webrtc::make_ref_counted<ChainedFrameTransformer>(
+        crypto_transformer_, encoded_video_frame_tap_);
+  } else {
+    receiver_transformer_ = crypto_transformer_;
+  }
+  receiver->SetDepacketizerToDecoderFrameTransformer(receiver_transformer_);
   e2ee_transformer_->SetEnabled(false);
+  av1_e2ee_transformer_->SetEnabled(false);
 }
 
 FrameCryptor::~FrameCryptor() {
@@ -177,12 +277,25 @@ void FrameCryptor::register_observer(
   observer_ = webrtc::make_ref_counted<NativeFrameCryptorObserver>(
       std::move(observer), this);
   e2ee_transformer_->RegisterFrameCryptorTransformerObserver(observer_);
+  av1_e2ee_transformer_->RegisterObserver(observer_);
 }
 
 void FrameCryptor::unregister_observer() const {
   webrtc::MutexLock lock(&mutex_);
+  if (encoded_video_frame_tap_) {
+    encoded_video_frame_tap_->SetObserver(nullptr);
+  }
+  av1_e2ee_transformer_->UnregisterObserver();
   observer_ = nullptr;
   e2ee_transformer_->UnRegisterFrameCryptorTransformerObserver();
+}
+
+void FrameCryptor::set_encoded_video_frame_observer_enabled(
+    bool enabled) const {
+  webrtc::MutexLock lock(&mutex_);
+  if (encoded_video_frame_tap_) {
+    encoded_video_frame_tap_->SetObserver(enabled ? observer_ : nullptr);
+  }
 }
 
 void FrameCryptor::set_packet_trailer_handler(
@@ -199,11 +312,11 @@ void FrameCryptor::set_packet_trailer_handler(
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> first;
   webrtc::scoped_refptr<webrtc::FrameTransformerInterface> second;
   if (sender_) {
-    first = e2ee_transformer_;
+    first = crypto_transformer_;
     second = timestamp_transformer;
   } else if (receiver_) {
     first = timestamp_transformer;
-    second = e2ee_transformer_;
+    second = receiver_transformer_;
   } else {
     return;
   }
@@ -233,19 +346,34 @@ void NativeFrameCryptorObserver::OnFrameCryptionStateChanged(
       participant_id, static_cast<FrameCryptionState>(state));
 }
 
+void NativeFrameCryptorObserver::OnEncodedVideoFrame(
+    const std::string mime_type,
+    uint32_t timestamp,
+    uint32_t ssrc,
+    bool key_frame,
+    webrtc::ArrayView<const uint8_t> data) {
+  rust::Vec<uint8_t> owned_data;
+  owned_data.reserve(data.size());
+  std::copy(data.begin(), data.end(), std::back_inserter(owned_data));
+  observer_->on_encoded_video_frame(mime_type, timestamp, ssrc, key_frame,
+                                    std::move(owned_data));
+}
+
 void FrameCryptor::set_enabled(bool enabled) const {
   webrtc::MutexLock lock(&mutex_);
   e2ee_transformer_->SetEnabled(enabled);
+  av1_e2ee_transformer_->SetEnabled(enabled);
 }
 
 bool FrameCryptor::enabled() const {
   webrtc::MutexLock lock(&mutex_);
-  return e2ee_transformer_->enabled();
+  return e2ee_transformer_->enabled() && av1_e2ee_transformer_->enabled();
 }
 
 void FrameCryptor::set_key_index(int32_t index) const {
   webrtc::MutexLock lock(&mutex_);
   e2ee_transformer_->SetKeyIndex(index);
+  av1_e2ee_transformer_->SetKeyIndex(index);
 }
 
 int32_t FrameCryptor::key_index() const {

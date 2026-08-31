@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
- 
+
 #include "av1_bitstream.h"
 
 #include <algorithm>
@@ -25,8 +25,25 @@ namespace {
 constexpr uint8_t kObuSizePresentBit = 0b0'0000'010;
 constexpr int kObuTypeSequenceHeader = 1;
 constexpr int kObuTypeTemporalDelimiter = 2;
+constexpr int kObuTypeFrameHeader = 3;
+constexpr int kObuTypeMetadata = 5;
+constexpr int kObuTypeFrame = 6;
 constexpr int kObuTypeTileList = 8;
 constexpr int kObuTypePadding = 15;
+constexpr size_t kE2eeIvSize = 12;
+constexpr size_t kE2eeTagSize = 16;
+constexpr size_t kE2eeMetadataPayloadSize = 32;
+constexpr uint8_t kE2eeMetadataVersion = 1;
+constexpr uint8_t kE2eeMagic0 = 'L';
+constexpr uint8_t kE2eeMagic1 = 'K';
+
+struct ParsedObu {
+  size_t offset = 0;
+  size_t payload_offset = 0;
+  size_t end = 0;
+  int type = -1;
+  bool has_size_field = false;
+};
 
 bool ObuHasExtension(uint8_t obu_header) {
   return (obu_header & 0b0'0000'100) != 0;
@@ -40,7 +57,10 @@ int ObuType(uint8_t obu_header) {
   return (obu_header & 0b0'1111'000) >> 3;
 }
 
-bool ReadLeb128(const uint8_t* data, size_t len, size_t* offset, uint64_t* value) {
+bool ReadLeb128(const uint8_t* data,
+                size_t len,
+                size_t* offset,
+                uint64_t* value) {
   if (!data || !offset || !value || *offset >= len) {
     return false;
   }
@@ -61,9 +81,67 @@ bool ReadLeb128(const uint8_t* data, size_t len, size_t* offset, uint64_t* value
   return false;
 }
 
+void WriteLeb128(uint64_t value, std::vector<uint8_t>* out) {
+  do {
+    uint8_t byte = static_cast<uint8_t>(value & 0x7F);
+    value >>= 7;
+    if (value != 0) {
+      byte |= 0x80;
+    }
+    out->push_back(byte);
+  } while (value != 0);
+}
+
+bool ParseAllObus(const uint8_t* data,
+                  size_t len,
+                  std::vector<ParsedObu>* result) {
+  if (!data || len == 0 || !result) {
+    return false;
+  }
+
+  result->clear();
+  size_t offset = 0;
+  while (offset < len) {
+    ParsedObu obu;
+    obu.offset = offset;
+    const uint8_t header = data[offset++];
+    // AV1 obu_forbidden_bit and obu_reserved_1bit must both be zero.
+    if ((header & 0x81) != 0) {
+      return false;
+    }
+    obu.type = ObuType(header);
+    obu.has_size_field = ObuHasSize(header);
+
+    if (ObuHasExtension(header)) {
+      if (offset >= len) {
+        return false;
+      }
+      ++offset;
+    }
+
+    if (obu.has_size_field) {
+      uint64_t payload_size = 0;
+      if (!ReadLeb128(data, len, &offset, &payload_size) ||
+          payload_size > len - offset) {
+        return false;
+      }
+      obu.payload_offset = offset;
+      offset += static_cast<size_t>(payload_size);
+    } else {
+      obu.payload_offset = offset;
+      offset = len;
+    }
+
+    obu.end = offset;
+    result->push_back(obu);
+  }
+
+  return !result->empty() && offset == len;
+}
+
 bool ShouldTransferObu(int obu_type) {
-  return obu_type != kObuTypeTemporalDelimiter && obu_type != kObuTypeTileList &&
-         obu_type != kObuTypePadding;
+  return obu_type != kObuTypeTemporalDelimiter &&
+         obu_type != kObuTypeTileList && obu_type != kObuTypePadding;
 }
 
 uint32_t ReadLittleEndianUint32(const std::vector<uint8_t>& data) {
@@ -131,7 +209,8 @@ bool AppendAnnexBObus(const uint8_t* data,
 
   while (offset < temporal_unit_end) {
     uint64_t frame_unit_size = 0;
-    if (!ReadBoundedLeb128(data, temporal_unit_end, &offset, &frame_unit_size) ||
+    if (!ReadBoundedLeb128(data, temporal_unit_end, &offset,
+                           &frame_unit_size) ||
         frame_unit_size == 0 || frame_unit_size > temporal_unit_end - offset) {
       return false;
     }
@@ -317,7 +396,8 @@ void EnsureSequenceHeaderOnKeyframe(
   }
   std::vector<uint8_t> merged;
   merged.reserve(cached_seq_header.size() + packet->size());
-  merged.insert(merged.end(), cached_seq_header.begin(), cached_seq_header.end());
+  merged.insert(merged.end(), cached_seq_header.begin(),
+                cached_seq_header.end());
   merged.insert(merged.end(), packet->begin(), packet->end());
   packet->swap(merged);
 }
@@ -359,6 +439,138 @@ bool IsWebRtcParseable(const uint8_t* data, size_t len) {
   }
   const std::vector<ObuSpan> obus = ParseObus(data, len);
   return !obus.empty();
+}
+
+bool ComputeE2eeEncryptionLayout(const uint8_t* data,
+                                 size_t len,
+                                 E2eeEncryptionLayout* layout) {
+  if (!layout) {
+    return false;
+  }
+  layout->protected_ranges.clear();
+  layout->protected_size = 0;
+
+  std::vector<ParsedObu> obus;
+  if (!ParseAllObus(data, len, &obus)) {
+    return false;
+  }
+
+  for (const ParsedObu& obu : obus) {
+    const size_t clear_payload_prefix =
+        (obu.type == kObuTypeFrameHeader || obu.type == kObuTypeFrame) &&
+                obu.payload_offset < obu.end
+            ? 1
+            : 0;
+    const size_t protected_start = obu.payload_offset + clear_payload_prefix;
+    if (protected_start >= obu.end) {
+      continue;
+    }
+    layout->protected_ranges.push_back({protected_start, obu.end});
+    layout->protected_size += obu.end - protected_start;
+  }
+
+  return true;
+}
+
+bool ExtractProtectedBytes(const uint8_t* data,
+                           size_t len,
+                           const E2eeEncryptionLayout& layout,
+                           std::vector<uint8_t>* protected_bytes) {
+  if (!data || !protected_bytes) {
+    return false;
+  }
+  protected_bytes->clear();
+  protected_bytes->reserve(layout.protected_size);
+  for (const ByteRange& range : layout.protected_ranges) {
+    if (range.start > range.end || range.end > len) {
+      protected_bytes->clear();
+      return false;
+    }
+    protected_bytes->insert(protected_bytes->end(), data + range.start,
+                            data + range.end);
+  }
+  return protected_bytes->size() == layout.protected_size;
+}
+
+bool WriteProtectedBytes(std::vector<uint8_t>* data,
+                         const E2eeEncryptionLayout& layout,
+                         const uint8_t* protected_bytes,
+                         size_t protected_len) {
+  if (!data || (!protected_bytes && protected_len != 0) ||
+      protected_len != layout.protected_size) {
+    return false;
+  }
+
+  size_t read_offset = 0;
+  for (const ByteRange& range : layout.protected_ranges) {
+    if (range.start > range.end || range.end > data->size()) {
+      return false;
+    }
+    const size_t range_len = range.end - range.start;
+    std::copy(protected_bytes + read_offset,
+              protected_bytes + read_offset + range_len,
+              data->begin() + range.start);
+    read_offset += range_len;
+  }
+  return read_offset == protected_len;
+}
+
+bool AppendE2eeMetadataObu(std::vector<uint8_t>* data,
+                           const E2eeMetadata& metadata) {
+  if (!data || metadata.iv.size() != kE2eeIvSize ||
+      metadata.tag.size() != kE2eeTagSize) {
+    return false;
+  }
+
+  std::vector<uint8_t> payload;
+  payload.reserve(kE2eeMetadataPayloadSize);
+  payload.push_back(kE2eeMagic0);
+  payload.push_back(kE2eeMagic1);
+  payload.push_back(kE2eeMetadataVersion);
+  payload.push_back(metadata.key_index);
+  payload.insert(payload.end(), metadata.iv.begin(), metadata.iv.end());
+  payload.insert(payload.end(), metadata.tag.begin(), metadata.tag.end());
+  if (payload.size() != kE2eeMetadataPayloadSize) {
+    return false;
+  }
+
+  data->push_back(
+      static_cast<uint8_t>((kObuTypeMetadata << 3) | kObuSizePresentBit));
+  WriteLeb128(payload.size(), data);
+  data->insert(data->end(), payload.begin(), payload.end());
+  return true;
+}
+
+bool ExtractE2eeMetadataObu(const uint8_t* data,
+                            size_t len,
+                            std::vector<uint8_t>* payload,
+                            E2eeMetadata* metadata) {
+  if (!payload || !metadata) {
+    return false;
+  }
+  std::vector<ParsedObu> obus;
+  if (!ParseAllObus(data, len, &obus)) {
+    return false;
+  }
+
+  const ParsedObu& obu = obus.back();
+  if (obu.type != kObuTypeMetadata || !obu.has_size_field || obu.end != len ||
+      obu.end - obu.payload_offset != kE2eeMetadataPayloadSize) {
+    return false;
+  }
+  const uint8_t* metadata_payload = data + obu.payload_offset;
+  if (metadata_payload[0] != kE2eeMagic0 ||
+      metadata_payload[1] != kE2eeMagic1 ||
+      metadata_payload[2] != kE2eeMetadataVersion) {
+    return false;
+  }
+
+  payload->assign(data, data + obu.offset);
+  metadata->key_index = metadata_payload[3];
+  metadata->iv.assign(metadata_payload + 4, metadata_payload + 4 + kE2eeIvSize);
+  metadata->tag.assign(metadata_payload + 4 + kE2eeIvSize,
+                       metadata_payload + kE2eeMetadataPayloadSize);
+  return true;
 }
 
 }  // namespace av1
