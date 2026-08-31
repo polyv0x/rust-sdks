@@ -7,6 +7,12 @@ description = "Rust Client SDK for LiveKit"
 repository.workspace = true
 readme = "README.md"
 
+# This crate is consumed as a local patch by applications that may deny all
+# warnings for their own workspace. Keep upstream compatibility/deprecation
+# warnings from becoming hard errors in those consumers.
+[lints.rust]
+warnings = "allow"
+
 [features]
 # By default ws TLS is not enabled
 default = ["native"]

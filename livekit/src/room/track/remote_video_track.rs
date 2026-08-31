@@ -17,6 +17,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use libwebrtc::{
@@ -205,6 +206,18 @@ impl RemoteVideoTrack {
 
     pub async fn get_stats(&self) -> RoomResult<Vec<RtcStats>> {
         super::remote_track::get_stats(&self.inner).await
+    }
+
+    /// Sets the minimum delay used by libWebRTC's adaptive jitter buffer.
+    ///
+    /// Returns `false` when the track has not been associated with a receiver
+    /// transceiver yet.
+    pub fn set_jitter_buffer_minimum_delay(&self, delay: Option<Duration>) -> bool {
+        let Some(transceiver) = self.transceiver() else {
+            return false;
+        };
+        transceiver.receiver().set_jitter_buffer_minimum_delay(delay);
+        true
     }
 
     pub(crate) fn on_muted(&self, f: impl Fn(Track) + Send + 'static) {

@@ -72,6 +72,7 @@ pub mod ffi {
         type LogSink;
 
         fn create_random_uuid() -> String;
+        fn time_micros() -> i64;
         fn video_encoder_backend_list() -> Vec<VideoEncoderBackend>;
         fn new_log_sink(fnc: fn(String, LoggingSeverity)) -> UniquePtr<LogSink>;
     }
