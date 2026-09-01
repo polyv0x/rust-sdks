@@ -345,6 +345,7 @@ pub mod dictionaries {
     #[serde(rename_all = "camelCase")]
     #[serde(default)]
     pub struct InboundRtpStreamStats {
+        pub receiver_id: String,
         pub track_identifier: String,
         pub mid: String,
         pub remote_id: String,

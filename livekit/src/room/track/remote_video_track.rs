@@ -37,9 +37,18 @@ pub use libwebrtc::native::packet_trailer::{SubscribeTimingEvent, SubscribeTimin
 
 const SUBSCRIBE_TIMING_BUFFER: usize = 256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitterBufferMinimumDelayState {
+    NotConfigured,
+    Deferred,
+    Requested,
+    Unavailable,
+}
+
 #[derive(Clone)]
 pub struct RemoteVideoTrack {
     inner: Arc<TrackInner>,
+    jitter_buffer_minimum_delay: Arc<Mutex<Option<Option<Duration>>>>,
     subscribe_timing_tx: Arc<Mutex<Option<broadcast::Sender<SubscribeTimingEvent>>>>,
 }
 
@@ -83,6 +92,7 @@ impl RemoteVideoTrack {
                 TrackKind::Video,
                 MediaStreamTrack::Video(rtc_track),
             )),
+            jitter_buffer_minimum_delay: Arc::new(Mutex::new(None)),
             subscribe_timing_tx: Arc::new(Mutex::new(None)),
         }
     }
@@ -210,14 +220,44 @@ impl RemoteVideoTrack {
 
     /// Sets the minimum delay used by libWebRTC's adaptive jitter buffer.
     ///
-    /// Returns `false` when the track has not been associated with a receiver
-    /// transceiver yet.
-    pub fn set_jitter_buffer_minimum_delay(&self, delay: Option<Duration>) -> bool {
+    /// The desired value is retained and reapplied whenever the receiver transceiver changes.
+    pub fn set_jitter_buffer_minimum_delay(
+        &self,
+        delay: Option<Duration>,
+    ) -> JitterBufferMinimumDelayState {
+        *self.jitter_buffer_minimum_delay.lock() = Some(delay);
+        self.apply_jitter_buffer_minimum_delay()
+    }
+
+    pub fn jitter_buffer_minimum_delay(&self) -> Option<Duration> {
+        self.jitter_buffer_minimum_delay.lock().as_ref().copied().flatten()
+    }
+
+    pub fn jitter_buffer_minimum_delay_state(&self) -> JitterBufferMinimumDelayState {
+        jitter_buffer_minimum_delay_state(
+            self.jitter_buffer_minimum_delay.lock().is_some(),
+            self.transceiver().is_some(),
+        )
+    }
+
+    pub fn receiver_id(&self) -> Option<String> {
+        self.transceiver().map(|transceiver| transceiver.receiver().id())
+    }
+
+    pub fn receiver_mid(&self) -> Option<String> {
+        self.transceiver().and_then(|transceiver| transceiver.mid())
+    }
+
+    fn apply_jitter_buffer_minimum_delay(&self) -> JitterBufferMinimumDelayState {
+        let desired = *self.jitter_buffer_minimum_delay.lock();
+        let Some(delay) = desired else {
+            return JitterBufferMinimumDelayState::NotConfigured;
+        };
         let Some(transceiver) = self.transceiver() else {
-            return false;
+            return JitterBufferMinimumDelayState::Deferred;
         };
         transceiver.receiver().set_jitter_buffer_minimum_delay(delay);
-        true
+        JitterBufferMinimumDelayState::Requested
     }
 
     pub(crate) fn on_muted(&self, f: impl Fn(Track) + Send + 'static) {
@@ -234,9 +274,54 @@ impl RemoteVideoTrack {
 
     pub(crate) fn set_transceiver(&self, transceiver: Option<RtpTransceiver>) {
         self.inner.info.write().transceiver = transceiver;
+        self.apply_jitter_buffer_minimum_delay();
     }
 
     pub(crate) fn update_info(&self, info: proto::TrackInfo) {
         remote_track::update_info(&self.inner, &Track::RemoteVideo(self.clone()), info);
+    }
+}
+
+fn jitter_buffer_minimum_delay_state(
+    configured: bool,
+    receiver_available: bool,
+) -> JitterBufferMinimumDelayState {
+    match (configured, receiver_available) {
+        (false, _) => JitterBufferMinimumDelayState::NotConfigured,
+        (true, false) => JitterBufferMinimumDelayState::Deferred,
+        (true, true) => JitterBufferMinimumDelayState::Requested,
+    }
+}
+
+#[cfg(test)]
+mod jitter_buffer_minimum_delay_tests {
+    use super::{jitter_buffer_minimum_delay_state, JitterBufferMinimumDelayState};
+
+    #[test]
+    fn configuration_transitions_when_a_receiver_is_associated() {
+        assert_eq!(
+            jitter_buffer_minimum_delay_state(true, false),
+            JitterBufferMinimumDelayState::Deferred
+        );
+        assert_eq!(
+            jitter_buffer_minimum_delay_state(true, true),
+            JitterBufferMinimumDelayState::Requested
+        );
+    }
+
+    #[test]
+    fn receiver_replacement_retains_a_requested_configuration() {
+        assert_eq!(
+            jitter_buffer_minimum_delay_state(true, true),
+            JitterBufferMinimumDelayState::Requested
+        );
+        assert_eq!(
+            jitter_buffer_minimum_delay_state(true, false),
+            JitterBufferMinimumDelayState::Deferred
+        );
+        assert_eq!(
+            jitter_buffer_minimum_delay_state(true, true),
+            JitterBufferMinimumDelayState::Requested
+        );
     }
 }
