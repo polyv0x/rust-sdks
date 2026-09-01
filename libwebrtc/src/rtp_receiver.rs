@@ -25,6 +25,10 @@ pub struct RtpReceiver {
 }
 
 impl RtpReceiver {
+    pub fn id(&self) -> String {
+        self.handle.id()
+    }
+
     pub fn track(&self) -> Option<MediaStreamTrack> {
         self.handle.track()
     }

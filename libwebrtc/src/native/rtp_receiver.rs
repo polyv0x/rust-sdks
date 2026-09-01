@@ -33,6 +33,10 @@ pub struct RtpReceiver {
 }
 
 impl RtpReceiver {
+    pub fn id(&self) -> String {
+        self.sys_handle.id()
+    }
+
     pub fn track(&self) -> Option<MediaStreamTrack> {
         let track_handle = self.sys_handle.track();
         if track_handle.is_null() {
