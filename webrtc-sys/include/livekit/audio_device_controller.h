@@ -66,6 +66,10 @@ class AudioDeviceController {
   void set_adm_recording_enabled(bool enabled) const;
   bool adm_recording_enabled() const;
 
+  // Microphone transmission gate
+  void set_microphone_transmission_enabled(bool enabled) const;
+  bool microphone_transmission_enabled() const;
+
   // ADM playout control
   void set_adm_playout_enabled(bool enabled) const;
   bool adm_playout_enabled() const;

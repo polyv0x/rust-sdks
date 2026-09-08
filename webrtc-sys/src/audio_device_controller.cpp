@@ -181,6 +181,15 @@ bool AudioDeviceController::adm_recording_enabled() const {
   return adm_proxy_->recording_enabled();
 }
 
+void AudioDeviceController::set_microphone_transmission_enabled(
+    bool enabled) const {
+  adm_proxy_->set_microphone_transmission_enabled(enabled);
+}
+
+bool AudioDeviceController::microphone_transmission_enabled() const {
+  return adm_proxy_->microphone_transmission_enabled();
+}
+
 void AudioDeviceController::set_adm_playout_enabled(bool enabled) const {
   adm_proxy_->set_playout_enabled(enabled);
 }

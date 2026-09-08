@@ -16,8 +16,12 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
+#include <cstddef>
 #include <string>
 
+#include "api/audio/audio_frame.h"
 #include "api/environment/environment.h"
 #include "api/scoped_refptr.h"
 #include "livekit/synthetic_audio_device.h"
@@ -63,7 +67,8 @@ namespace livekit_ffi {
 /// | Synthetic | NativeAudioSource | Internal task + FFI | Unity audio, agents |
 /// | Platform | Platform ADM mic | Platform ADM speakers | VoIP with AEC |
 ///
-class AdmProxy : public webrtc::AudioDeviceModule {
+class AdmProxy : public webrtc::AudioDeviceModule,
+                 private webrtc::AudioTransport {
  public:
   explicit AdmProxy(const webrtc::Environment& env,
                     webrtc::Thread* worker_thread);
@@ -105,6 +110,13 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   /// @note Only effective when Platform ADM is active.
   void set_recording_enabled(bool enabled);
   bool recording_enabled() const;
+
+  /// Controls whether captured microphone samples are forwarded to WebRTC.
+  ///
+  /// Disabling transmission keeps the platform recording device and WebRTC
+  /// audio pipeline running, but replaces captured samples with silence.
+  void set_microphone_transmission_enabled(bool enabled);
+  bool microphone_transmission_enabled() const;
 
   /// Control whether playout goes through Platform ADM speakers.
   ///
@@ -206,6 +218,53 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   int32_t SetObserver(webrtc::AudioDeviceObserver* observer) override;
 
  private:
+  // ===========================================================================
+  // AudioTransport Interface
+  // ===========================================================================
+
+  int32_t RecordedDataIsAvailable(const void* audioSamples,
+                                  size_t nSamples,
+                                  size_t nBytesPerSample,
+                                  size_t nChannels,
+                                  uint32_t samplesPerSec,
+                                  uint32_t totalDelayMS,
+                                  int32_t clockDrift,
+                                  uint32_t currentMicLevel,
+                                  bool keyPressed,
+                                  uint32_t& newMicLevel) override;
+  int32_t RecordedDataIsAvailable(
+      const void* audioSamples,
+      size_t nSamples,
+      size_t nBytesPerSample,
+      size_t nChannels,
+      uint32_t samplesPerSec,
+      uint32_t totalDelayMS,
+      int32_t clockDrift,
+      uint32_t currentMicLevel,
+      bool keyPressed,
+      uint32_t& newMicLevel,
+      std::optional<int64_t> estimatedCaptureTimeNS) override;
+  int32_t NeedMorePlayData(size_t nSamples,
+                           size_t nBytesPerSample,
+                           size_t nChannels,
+                           uint32_t samplesPerSec,
+                           void* audioSamples,
+                           size_t& nSamplesOut,
+                           int64_t* elapsed_time_ms,
+                           int64_t* ntp_time_ms) override;
+  void PullRenderData(int bits_per_sample,
+                      int sample_rate,
+                      size_t number_of_channels,
+                      size_t number_of_frames,
+                      void* audio_data,
+                      int64_t* elapsed_time_ms,
+                      int64_t* ntp_time_ms) override;
+
+  const void* GatedAudioSamples(const void* audio_samples,
+                                size_t sample_count,
+                                size_t bytes_per_sample,
+                                size_t channel_count) const;
+
   // Returns true if platform mode is active for playout
   // (ref_count > 0 && playout_enabled)
   bool is_platform_playout_active() const;
@@ -250,8 +309,9 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   // Reference count for Platform ADM users (PlatformAudio instances)
   int platform_adm_ref_count_ = 0;
 
-  // Audio transport callback (registered by WebRTC)
-  webrtc::AudioTransport* audio_transport_ = nullptr;
+  // Audio transport callback (registered by WebRTC). The proxy installs itself
+  // in each ADM so microphone capture can be gated without stopping recording.
+  std::atomic<webrtc::AudioTransport*> audio_transport_{nullptr};
 
   // State tracking
   bool playout_initialized_ = false;
@@ -262,8 +322,16 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   // Control flags
   // When false (default), recording operations are no-ops (NativeAudioSource mode)
   bool recording_enabled_ = false;
+  // Process-wide for this peer-connection factory. Atomic so the capture
+  // callback can read the gate without locking.
+  std::atomic<bool> microphone_transmission_enabled_{true};
   // When false (default), playout uses synthetic mode (internal task pumps audio)
   bool playout_enabled_ = false;
+
+  // WebRTC audio frames have a fixed maximum size. Keeping one zero-filled
+  // buffer avoids allocation and locking on the real-time capture thread.
+  alignas(std::max_align_t)
+      std::array<uint8_t, webrtc::AudioFrame::kMaxDataSizeBytes> silent_audio_{};
 
   // Selected device information (for re-initialization after ADM restart)
   // We store both index and GUID. GUID is preferred for restoration as it's

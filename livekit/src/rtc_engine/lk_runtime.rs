@@ -268,6 +268,18 @@ impl LkRuntime {
         self.pc_factory.adm_recording_enabled()
     }
 
+    /// Control whether captured microphone samples are forwarded to WebRTC.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_microphone_transmission_enabled(&self, enabled: bool) {
+        self.pc_factory.set_microphone_transmission_enabled(enabled)
+    }
+
+    /// Check whether captured microphone samples are forwarded to WebRTC.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn microphone_transmission_enabled(&self) -> bool {
+        self.pc_factory.microphone_transmission_enabled()
+    }
+
     /// Control whether ADM playout (speakers) is enabled.
     ///
     /// When disabled (default), playout uses synthetic mode - remote audio is

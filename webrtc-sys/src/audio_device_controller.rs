@@ -59,6 +59,9 @@ pub mod ffi {
         fn set_adm_recording_enabled(self: &AudioDeviceController, enabled: bool);
         fn adm_recording_enabled(self: &AudioDeviceController) -> bool;
 
+        fn set_microphone_transmission_enabled(self: &AudioDeviceController, enabled: bool);
+        fn microphone_transmission_enabled(self: &AudioDeviceController) -> bool;
+
         fn set_adm_playout_enabled(self: &AudioDeviceController, enabled: bool);
         fn adm_playout_enabled(self: &AudioDeviceController) -> bool;
 
@@ -106,6 +109,12 @@ mod tests {
         assert_eq!(audio.adm_recording_enabled(), !initial_recording);
         audio.set_adm_recording_enabled(initial_recording);
         assert_eq!(audio.adm_recording_enabled(), initial_recording);
+
+        let initial_transmission = audio.microphone_transmission_enabled();
+        audio.set_microphone_transmission_enabled(!initial_transmission);
+        assert_eq!(audio.microphone_transmission_enabled(), !initial_transmission);
+        assert_eq!(audio.adm_recording_enabled(), initial_recording);
+        audio.set_microphone_transmission_enabled(initial_transmission);
 
         let initial_playout = audio.adm_playout_enabled();
         audio.set_adm_playout_enabled(!initial_playout);

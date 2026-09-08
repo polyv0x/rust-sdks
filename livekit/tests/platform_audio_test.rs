@@ -1292,6 +1292,31 @@ async fn test_adm_proxy_recording_enabled_flag() -> Result<()> {
     Ok(())
 }
 
+/// Test that the microphone transmission gate is independent from ADM recording.
+#[test_log::test(tokio::test)]
+#[serial]
+async fn test_microphone_transmission_enabled_flag() -> Result<()> {
+    let audio = PlatformAudio::new()?;
+    let second_handle = PlatformAudio::new()?;
+    let initial_transmission = audio.microphone_transmission_enabled();
+
+    audio.set_microphone_transmission_enabled(false);
+    assert!(!audio.microphone_transmission_enabled());
+    assert!(!second_handle.microphone_transmission_enabled());
+
+    second_handle.set_microphone_transmission_enabled(true);
+    assert!(audio.microphone_transmission_enabled());
+    assert!(second_handle.microphone_transmission_enabled());
+
+    audio.set_microphone_transmission_enabled(false);
+    drop(audio);
+
+    let replacement_handle = PlatformAudio::new()?;
+    assert!(!replacement_handle.microphone_transmission_enabled());
+    replacement_handle.set_microphone_transmission_enabled(initial_transmission);
+    Ok(())
+}
+
 /// Test ADM playout enabled flag.
 ///
 /// Verifies that set_adm_playout_enabled/adm_playout_enabled

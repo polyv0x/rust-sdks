@@ -515,6 +515,25 @@ impl PlatformAudio {
         RtcAudioSource::Device
     }
 
+    /// Controls whether captured microphone samples are sent through WebRTC.
+    ///
+    /// When disabled, recording remains active and captured samples are replaced
+    /// with silence. This is suitable for push-to-talk because it does not change
+    /// the operating system's microphone activity state.
+    ///
+    /// `PlatformAudio` instances share the process-wide peer-connection factory,
+    /// so changing this value is visible through every live instance.
+    pub fn set_microphone_transmission_enabled(&self, enabled: bool) {
+        self.handle.runtime.set_microphone_transmission_enabled(enabled);
+    }
+
+    /// Returns whether captured microphone samples are sent through WebRTC.
+    ///
+    /// This reads the process-wide gate shared by all `PlatformAudio` instances.
+    pub fn microphone_transmission_enabled(&self) -> bool {
+        self.handle.runtime.microphone_transmission_enabled()
+    }
+
     // =========================================================================
     // Device Enumeration
     // =========================================================================

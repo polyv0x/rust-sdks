@@ -70,6 +70,7 @@ AdmProxy::AdmProxy(const webrtc::Environment& env, webrtc::Thread* worker_thread
 
 AdmProxy::~AdmProxy() {
   RTC_LOG(LS_VERBOSE) << "AdmProxy::~AdmProxy()";
+  audio_transport_.store(nullptr, std::memory_order_release);
 
   if (synthetic_adm_) {
     synthetic_adm_->Terminate();
@@ -129,6 +130,10 @@ bool AdmProxy::EnsurePlatformAdmCreated() {
     RTC_LOG(LS_ERROR) << "AdmProxy: Platform ADM Init() failed with error=" << init_result;
     platform_adm_ = nullptr;
     return false;
+  }
+
+  if (audio_transport_.load(std::memory_order_acquire)) {
+    platform_adm_->RegisterAudioCallback(this);
   }
 
   return true;
@@ -214,6 +219,14 @@ bool AdmProxy::recording_enabled() const {
   return recording_enabled_;
 }
 
+void AdmProxy::set_microphone_transmission_enabled(bool enabled) {
+  microphone_transmission_enabled_.store(enabled, std::memory_order_release);
+}
+
+bool AdmProxy::microphone_transmission_enabled() const {
+  return microphone_transmission_enabled_.load(std::memory_order_acquire);
+}
+
 void AdmProxy::set_playout_enabled(bool enabled) {
   webrtc::MutexLock lock(&mutex_);
   if (playout_enabled_ == enabled) {
@@ -288,16 +301,124 @@ int32_t AdmProxy::ActiveAudioLayer(AudioLayer* audioLayer) const {
 
 int32_t AdmProxy::RegisterAudioCallback(webrtc::AudioTransport* transport) {
   webrtc::MutexLock lock(&mutex_);
-  audio_transport_ = transport;
+  audio_transport_.store(transport, std::memory_order_release);
+  auto* proxy_transport =
+      transport ? static_cast<webrtc::AudioTransport*>(this) : nullptr;
 
   // Register with both ADMs so they're ready when we switch modes
   if (synthetic_adm_) {
-    synthetic_adm_->RegisterAudioCallback(transport);
+    synthetic_adm_->RegisterAudioCallback(proxy_transport);
   }
   if (platform_adm_) {
-    platform_adm_->RegisterAudioCallback(transport);
+    platform_adm_->RegisterAudioCallback(proxy_transport);
   }
   return 0;
+}
+
+const void* AdmProxy::GatedAudioSamples(const void* audio_samples,
+                                        size_t sample_count,
+                                        size_t bytes_per_sample,
+                                        size_t channel_count) const {
+  if (microphone_transmission_enabled_.load(std::memory_order_acquire)) {
+    return audio_samples;
+  }
+
+  if (channel_count != 0 &&
+      sample_count > silent_audio_.size() / channel_count) {
+    return nullptr;
+  }
+  const size_t channel_sample_count = sample_count * channel_count;
+  if (bytes_per_sample != 0 &&
+      channel_sample_count > silent_audio_.size() / bytes_per_sample) {
+    return nullptr;
+  }
+
+  return silent_audio_.data();
+}
+
+int32_t AdmProxy::RecordedDataIsAvailable(const void* audioSamples,
+                                          size_t nSamples,
+                                          size_t nBytesPerSample,
+                                          size_t nChannels,
+                                          uint32_t samplesPerSec,
+                                          uint32_t totalDelayMS,
+                                          int32_t clockDrift,
+                                          uint32_t currentMicLevel,
+                                          bool keyPressed,
+                                          uint32_t& newMicLevel) {
+  auto* transport = audio_transport_.load(std::memory_order_acquire);
+  const void* gated_samples =
+      GatedAudioSamples(audioSamples, nSamples, nBytesPerSample, nChannels);
+  if (!transport || !gated_samples) {
+    newMicLevel = currentMicLevel;
+    return -1;
+  }
+
+  return transport->RecordedDataIsAvailable(
+      gated_samples, nSamples, nBytesPerSample, nChannels, samplesPerSec,
+      totalDelayMS, clockDrift, currentMicLevel, keyPressed, newMicLevel);
+}
+
+int32_t AdmProxy::RecordedDataIsAvailable(
+    const void* audioSamples,
+    size_t nSamples,
+    size_t nBytesPerSample,
+    size_t nChannels,
+    uint32_t samplesPerSec,
+    uint32_t totalDelayMS,
+    int32_t clockDrift,
+    uint32_t currentMicLevel,
+    bool keyPressed,
+    uint32_t& newMicLevel,
+    std::optional<int64_t> estimatedCaptureTimeNS) {
+  auto* transport = audio_transport_.load(std::memory_order_acquire);
+  const void* gated_samples =
+      GatedAudioSamples(audioSamples, nSamples, nBytesPerSample, nChannels);
+  if (!transport || !gated_samples) {
+    newMicLevel = currentMicLevel;
+    return -1;
+  }
+
+  return transport->RecordedDataIsAvailable(
+      gated_samples, nSamples, nBytesPerSample, nChannels, samplesPerSec,
+      totalDelayMS, clockDrift, currentMicLevel, keyPressed, newMicLevel,
+      estimatedCaptureTimeNS);
+}
+
+int32_t AdmProxy::NeedMorePlayData(size_t nSamples,
+                                   size_t nBytesPerSample,
+                                   size_t nChannels,
+                                   uint32_t samplesPerSec,
+                                   void* audioSamples,
+                                   size_t& nSamplesOut,
+                                   int64_t* elapsed_time_ms,
+                                   int64_t* ntp_time_ms) {
+  auto* transport = audio_transport_.load(std::memory_order_acquire);
+  if (!transport) {
+    nSamplesOut = 0;
+    return -1;
+  }
+
+  return transport->NeedMorePlayData(
+      nSamples, nBytesPerSample, nChannels, samplesPerSec, audioSamples,
+      nSamplesOut, elapsed_time_ms, ntp_time_ms);
+}
+
+void AdmProxy::PullRenderData(int bits_per_sample,
+                              int sample_rate,
+                              size_t number_of_channels,
+                              size_t number_of_frames,
+                              void* audio_data,
+                              int64_t* elapsed_time_ms,
+                              int64_t* ntp_time_ms) {
+  auto* transport = audio_transport_.load(std::memory_order_acquire);
+  if (!transport) {
+    return;
+  }
+
+  transport->PullRenderData(bits_per_sample, sample_rate, number_of_channels,
+                            number_of_frames, audio_data, elapsed_time_ms,
+                            ntp_time_ms);
 }
 
 int32_t AdmProxy::Init() {

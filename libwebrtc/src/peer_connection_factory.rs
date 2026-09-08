@@ -162,6 +162,11 @@ pub mod native {
         fn set_adm_recording_enabled(&self, enabled: bool);
         fn adm_recording_enabled(&self) -> bool;
 
+        // Microphone transmission gate. This replaces captured samples with
+        // silence without changing the ADM recording lifecycle.
+        fn set_microphone_transmission_enabled(&self, enabled: bool);
+        fn microphone_transmission_enabled(&self) -> bool;
+
         // ADM playout control
         // When disabled (default), playout uses synthetic mode - remote audio is
         // delivered via FFI callbacks. When enabled, plays through platform speakers.
@@ -294,6 +299,14 @@ pub mod native {
 
         fn adm_recording_enabled(&self) -> bool {
             self.handle.adm_recording_enabled()
+        }
+
+        fn set_microphone_transmission_enabled(&self, enabled: bool) {
+            self.handle.set_microphone_transmission_enabled(enabled)
+        }
+
+        fn microphone_transmission_enabled(&self) -> bool {
+            self.handle.microphone_transmission_enabled()
         }
 
         fn set_adm_playout_enabled(&self, enabled: bool) {

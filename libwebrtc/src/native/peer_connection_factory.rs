@@ -288,6 +288,19 @@ impl PeerConnectionFactory {
         self.sys_handle.audio_device().adm_recording_enabled()
     }
 
+    /// Control whether captured microphone samples are forwarded to WebRTC.
+    ///
+    /// Disabling transmission replaces captured samples with silence while the
+    /// ADM recording device and audio pipeline remain active.
+    pub fn set_microphone_transmission_enabled(&self, enabled: bool) {
+        self.sys_handle.audio_device().set_microphone_transmission_enabled(enabled)
+    }
+
+    /// Check whether captured microphone samples are forwarded to WebRTC.
+    pub fn microphone_transmission_enabled(&self) -> bool {
+        self.sys_handle.audio_device().microphone_transmission_enabled()
+    }
+
     /// Control whether ADM playout (speakers) is enabled.
     ///
     /// When disabled (default), playout uses synthetic mode - remote audio is
