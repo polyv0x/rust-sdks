@@ -16,10 +16,14 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
+#include <cstddef>
 #include <optional>
 #include <utility>
 #include <variant>
 
+#include "api/audio/audio_frame.h"
 #include "api/environment/environment.h"
 #include "api/scoped_refptr.h"
 #include "api/sequence_checker.h"
@@ -43,12 +47,12 @@ namespace livekit_ffi {
 ///
 /// ## Threading Model
 ///
-/// The proxy is worker-thread-affine. Every public method marshals once at the
+/// The proxy owns both ADMs on the worker thread. ADM control methods marshal at the
 /// boundary onto the WebRTC worker thread via `RunOnWorker` and runs inline
 /// when the caller is already on the worker, which is the case for all calls
-/// originating from WebRTC internals (AudioState, the voice engine). All
-/// mutable state, including both sub ADMs, is owned by the worker thread, so
-/// no locks are needed and mode transitions execute as plain sequential code.
+/// originating from AudioState and the voice engine. AudioTransport callbacks
+/// run on the audio threads and read the callback pointer and microphone
+/// transmission gate atomically.
 ///
 /// This also satisfies the platform ADM threading contract: platform
 /// implementations bind a sequence checker to their construction thread and
@@ -87,7 +91,8 @@ namespace livekit_ffi {
 /// | Synthetic | NativeAudioSource | Internal task + FFI | Unity audio, agents |
 /// | Platform | Platform ADM mic | Platform ADM speakers | VoIP with AEC |
 ///
-class AdmProxy : public webrtc::AudioDeviceModule {
+class AdmProxy : public webrtc::AudioDeviceModule,
+                 private webrtc::AudioTransport {
  public:
   /// Must be constructed on the worker thread.
   explicit AdmProxy(const webrtc::Environment& env,
@@ -130,6 +135,13 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   /// @note Only effective when Platform ADM is active.
   void set_recording_enabled(bool enabled);
   bool recording_enabled() const;
+
+  /// Controls whether captured microphone samples are forwarded to WebRTC.
+  ///
+  /// Disabling transmission keeps the platform recording device and WebRTC
+  /// audio pipeline running, but replaces captured samples with silence.
+  void set_microphone_transmission_enabled(bool enabled);
+  bool microphone_transmission_enabled() const;
 
   /// Control whether playout goes through Platform ADM speakers.
   ///
@@ -253,6 +265,53 @@ class AdmProxy : public webrtc::AudioDeviceModule {
     });
   }
 
+  // ===========================================================================
+  // AudioTransport Interface
+  // ===========================================================================
+
+  int32_t RecordedDataIsAvailable(const void* audioSamples,
+                                  size_t nSamples,
+                                  size_t nBytesPerSample,
+                                  size_t nChannels,
+                                  uint32_t samplesPerSec,
+                                  uint32_t totalDelayMS,
+                                  int32_t clockDrift,
+                                  uint32_t currentMicLevel,
+                                  bool keyPressed,
+                                  uint32_t& newMicLevel) override;
+  int32_t RecordedDataIsAvailable(
+      const void* audioSamples,
+      size_t nSamples,
+      size_t nBytesPerSample,
+      size_t nChannels,
+      uint32_t samplesPerSec,
+      uint32_t totalDelayMS,
+      int32_t clockDrift,
+      uint32_t currentMicLevel,
+      bool keyPressed,
+      uint32_t& newMicLevel,
+      std::optional<int64_t> estimatedCaptureTimeNS) override;
+  int32_t NeedMorePlayData(size_t nSamples,
+                           size_t nBytesPerSample,
+                           size_t nChannels,
+                           uint32_t samplesPerSec,
+                           void* audioSamples,
+                           size_t& nSamplesOut,
+                           int64_t* elapsed_time_ms,
+                           int64_t* ntp_time_ms) override;
+  void PullRenderData(int bits_per_sample,
+                      int sample_rate,
+                      size_t number_of_channels,
+                      size_t number_of_frames,
+                      void* audio_data,
+                      int64_t* elapsed_time_ms,
+                      int64_t* ntp_time_ms) override;
+
+  const void* GatedAudioSamples(const void* audio_samples,
+                                size_t sample_count,
+                                size_t bytes_per_sample,
+                                size_t channel_count) const;
+
   // Returns true if platform mode is active for playout
   // (ref_count > 0 && playout_enabled)
   bool IsPlatformPlayoutActive() const RTC_RUN_ON(worker_thread_);
@@ -295,9 +354,9 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   // Reference count for Platform ADM users (PlatformAudio instances)
   int platform_adm_ref_count_ RTC_GUARDED_BY(worker_thread_) = 0;
 
-  // Audio transport callback (registered by WebRTC)
-  webrtc::AudioTransport* audio_transport_ RTC_GUARDED_BY(worker_thread_) =
-      nullptr;
+  // Audio transport callback (registered by WebRTC). The proxy installs itself
+  // in each ADM so microphone capture can be gated without stopping recording.
+  std::atomic<webrtc::AudioTransport*> audio_transport_{nullptr};
 
   // State tracking
   bool playing_ RTC_GUARDED_BY(worker_thread_) = false;
@@ -306,6 +365,9 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   // Control flags
   // When false (default), recording operations are no-ops (NativeAudioSource mode)
   bool recording_enabled_ RTC_GUARDED_BY(worker_thread_) = false;
+  // Process-wide for this peer-connection factory. Atomic so the capture
+  // callback can read the gate without locking.
+  std::atomic<bool> microphone_transmission_enabled_{true};
   // When false (default), playout uses synthetic mode (internal task pumps audio)
   bool playout_enabled_ RTC_GUARDED_BY(worker_thread_) = false;
 
@@ -330,6 +392,11 @@ class AdmProxy : public webrtc::AudioDeviceModule {
   std::optional<bool> selected_stereo_playout_ RTC_GUARDED_BY(worker_thread_);
   std::optional<bool> selected_stereo_recording_
       RTC_GUARDED_BY(worker_thread_);
+
+  // WebRTC audio frames have a fixed maximum size. Keeping one zero-filled
+  // buffer avoids allocation and locking on the real-time capture thread.
+  alignas(std::max_align_t)
+      std::array<uint8_t, webrtc::AudioFrame::kMaxDataSizeBytes> silent_audio_{};
 };
 
 }  // namespace livekit_ffi
