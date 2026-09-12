@@ -61,6 +61,10 @@ fn main() {
     if is_desktop {
         rust_files.push("src/desktop_capturer.rs");
     }
+    let encoder_tests = env::var_os("CARGO_FEATURE_TEST_SUPPORT").is_some();
+    if encoder_tests {
+        rust_files.push("src/encoder_tests.rs");
+    }
 
     let mut builder = cxx_build::bridges(rust_files);
 
@@ -86,6 +90,7 @@ fn main() {
         "src/dmabuf_video_frame_buffer.cpp",
         "src/encoded_video_frame_buffer.cpp",
         "src/video_encoder_factory.cpp",
+        "src/source_aware_video_encoder.cpp",
         "src/passthrough_video_encoder.cpp",
         "src/video_decoder_factory.cpp",
         "src/synthetic_audio_device.cpp",
@@ -104,6 +109,9 @@ fn main() {
 
     if is_desktop {
         builder.file("src/desktop_capturer.cpp");
+    }
+    if encoder_tests {
+        builder.file("src/encoder_tests.cpp");
     }
 
     let webrtc_dir = webrtc_sys_build::webrtc_dir();

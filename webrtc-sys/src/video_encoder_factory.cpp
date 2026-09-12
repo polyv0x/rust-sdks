@@ -29,6 +29,7 @@
 #include "api/video_codecs/video_encoder_factory_template.h"
 #include "livekit/objc_video_factory.h"
 #include "livekit/passthrough_video_encoder.h"
+#include "livekit/source_aware_video_encoder.h"
 #include "livekit/webrtc.h"
 #include "media/base/media_constants.h"
 #include "media/engine/simulcast_encoder_adapter.h"
@@ -610,8 +611,17 @@ std::unique_ptr<webrtc::VideoEncoder> VideoEncoderFactory::Create(
     const webrtc::SdpVideoFormat& format) {
   std::unique_ptr<webrtc::VideoEncoder> encoder;
   if (format.IsCodecInList(internal_factory_->GetSupportedFormats())) {
+    if (BackendFromFormat(format) == VideoEncoderBackend::PreEncoded) {
+      return internal_factory_->Create(env, format);
+    }
     encoder = std::make_unique<webrtc::SimulcastEncoderAdapter>(
         env, internal_factory_.get(), nullptr, format);
+    // A sender's selector can tag the format only after the initial encoder
+    // has been created. Dispatch encoded input synchronously before any pixel
+    // encoder or simulcast adapter can cast/map its native frame buffer.
+    encoder = std::make_unique<SourceAwareVideoEncoder>(
+        std::move(encoder),
+        PassthroughVideoEncoderFactory().Create(env, StripBackendParameter(format)));
   }
 
   return encoder;
