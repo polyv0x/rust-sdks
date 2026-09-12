@@ -9,6 +9,8 @@ repository.workspace = true
 
 [features]
 default = []
+# Builds the native encoder regression harness; not needed by SDK consumers.
+test-support = []
 
 # How CI checks this crate's features, read by
 # `.github/workflows/feature-combinations-curated.yml` via `cargo metadata`.

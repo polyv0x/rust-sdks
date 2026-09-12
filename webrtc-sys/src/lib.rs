@@ -23,6 +23,8 @@ pub mod candidate;
 pub mod data_channel;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod desktop_capturer;
+#[cfg(all(test, feature = "test-support"))]
+mod encoder_tests;
 pub mod frame_cryptor;
 pub mod helper;
 pub mod jsep;
