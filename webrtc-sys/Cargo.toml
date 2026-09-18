@@ -10,7 +10,11 @@ repository.workspace = true
 [features]
 default = []
 # Builds the native encoder regression harness; not needed by SDK consumers.
-test-support = []
+test-support = ["decoder_tests"]
+# cxx-build does not normalize hyphens in conditional bridge feature names.
+decoder_tests = []
+# Explicitly exclude SDK sample codecs when applications provide their own backends.
+disable-nvidia-samples = []
 
 [dependencies]
 cxx = "1.0"

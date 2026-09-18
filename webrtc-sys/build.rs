@@ -48,6 +48,7 @@ fn main() {
         "src/webrtc.rs",
         "src/video_frame.rs",
         "src/video_frame_buffer.rs",
+        "src/external_video_decoder.rs",
         "src/helper.rs",
         "src/yuv_helper.rs",
         "src/audio_resampler.rs",
@@ -66,6 +67,9 @@ fn main() {
         rust_files.push("src/encoder_tests.rs");
     }
 
+    for source in &rust_files {
+        println!("cargo:rerun-if-changed={source}");
+    }
     let mut builder = cxx_build::bridges(rust_files);
 
     builder.files(&[
@@ -93,6 +97,7 @@ fn main() {
         "src/source_aware_video_encoder.cpp",
         "src/passthrough_video_encoder.cpp",
         "src/video_decoder_factory.cpp",
+        "src/external_video_decoder.cpp",
         "src/synthetic_audio_device.cpp",
         "src/adm_proxy.cpp",
         "src/audio_resampler.cpp",
@@ -111,7 +116,7 @@ fn main() {
         builder.file("src/desktop_capturer.cpp");
     }
     if encoder_tests {
-        builder.file("src/encoder_tests.cpp");
+        builder.file("src/encoder_tests.cpp").file("src/decoder_tests.cpp");
     }
 
     let webrtc_dir = webrtc_sys_build::webrtc_dir();
@@ -280,7 +285,7 @@ fn main() {
                 }
             }
 
-            if x86 || arm {
+            if (x86 || arm) && env::var_os("CARGO_FEATURE_DISABLE_NVIDIA_SAMPLES").is_none() {
                 let cuda_home = PathBuf::from(match env::var("CUDA_HOME") {
                     Ok(p) => p,
                     Err(_) => "/usr/local/cuda".to_owned(),

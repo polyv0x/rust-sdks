@@ -68,6 +68,8 @@ pub mod video_track;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native {
+    /// Application-supplied native video decoder and allocation contracts.
+    pub use webrtc_sys::external_video_decoder;
     pub use webrtc_sys::webrtc::ffi::create_random_uuid;
 
     pub fn time_micros() -> i64 {
