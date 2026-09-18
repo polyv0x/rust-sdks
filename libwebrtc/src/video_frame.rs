@@ -591,6 +591,11 @@ pub mod native {
     }
 
     impl NativeBuffer {
+        /// Retain an application's native allocation without converting it to CPU pixels.
+        pub fn external_frame(&self) -> Option<std::sync::Arc<dyn webrtc_sys::external_video_decoder::NativeDecodedFrame>> {
+            self.handle.external_frame()
+        }
+
         /// Creates a `NativeBuffer` from a `CVPixelBufferRef` pointer.
         ///
         /// This function does not bump the reference count of the pixel buffer.

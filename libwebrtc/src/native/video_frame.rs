@@ -148,6 +148,10 @@ macro_rules! impl_to_argb {
 
 #[allow(unused_unsafe)]
 impl NativeBuffer {
+    pub fn external_frame(&self) -> Option<std::sync::Arc<dyn webrtc_sys::external_video_decoder::NativeDecodedFrame>> {
+        webrtc_sys::external_video_decoder::ffi::external_frame_owner(&self.sys_handle).frame()
+    }
+
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub unsafe fn from_cv_pixel_buffer(
         cv_pixel_buffer: *mut std::ffi::c_void,

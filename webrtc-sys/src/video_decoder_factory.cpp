@@ -15,6 +15,8 @@
  */
 
 #include "livekit/video_decoder_factory.h"
+#include "livekit/external_video_decoder.h"
+#include "api/video_codecs/video_decoder_software_fallback_wrapper.h"
 
 #include <modules/video_coding/codecs/av1/av1_svc_config.h>
 #include "api/environment/environment.h"
@@ -113,7 +115,11 @@ std::vector<webrtc::SdpVideoFormat> VideoDecoderFactory::GetSupportedFormats()
   for (const webrtc::SdpVideoFormat& format :
        webrtc::SupportedVP9DecoderCodecs())
     formats.push_back(format);
-  if (internal_h264_decoder_works_) {
+  bool external_h264 = false;
+#if defined(WEBRTC_LINUX)
+  external_h264 = CreateExternalVideoDecoder(webrtc::kH264CodecName) != nullptr;
+#endif
+  if (internal_h264_decoder_works_ || external_h264) {
     for (const webrtc::SdpVideoFormat& h264_format :
          webrtc::SupportedH264DecoderCodecs()) {
       formats.push_back(h264_format);
@@ -143,6 +149,18 @@ VideoDecoderFactory::CodecSupport VideoDecoderFactory::QueryCodecSupport(
 }
 
 std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::Create(
+    const webrtc::Environment& env, const webrtc::SdpVideoFormat& format) {
+  auto builtin = CreateBuiltin(env, format);
+#if defined(WEBRTC_LINUX)
+  if (auto external = CreateExternalVideoDecoder(format.name)) {
+    if (builtin) return webrtc::CreateVideoDecoderSoftwareFallbackWrapper(env, std::move(builtin), std::move(external));
+    return external;
+  }
+#endif
+  return builtin;
+}
+
+std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::CreateBuiltin(
     const webrtc::Environment& env, const webrtc::SdpVideoFormat& format) {
   for (const auto& factory : factories_) {
     for (const auto& supported_format : factory->GetSupportedFormats()) {

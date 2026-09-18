@@ -25,6 +25,9 @@ pub mod data_channel;
 pub mod desktop_capturer;
 #[cfg(all(test, feature = "test-support"))]
 mod encoder_tests;
+#[cfg(all(test, feature = "test-support"))]
+mod decoder_tests;
+pub mod external_video_decoder;
 pub mod frame_cryptor;
 pub mod helper;
 pub mod jsep;
