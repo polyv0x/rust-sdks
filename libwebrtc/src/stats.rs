@@ -392,7 +392,8 @@ pub mod dictionaries {
         pub frames_received: u64,
         pub decoder_implementation: String,
         pub playout_id: String,
-        pub power_efficient_decoder: bool,
+        /// Whether the decoder reports hardware acceleration; absent when unmeasured.
+        pub power_efficient_decoder: Option<bool>,
         pub frames_assembled_from_multiple_packets: u64,
         pub total_assembly_time: f64,
         pub retransmitted_packets_received: u64,
@@ -621,5 +622,23 @@ pub mod dictionaries {
         pub id: String,
         pub stream_identifier: String,
         // pub timestamp: i64,
+    }
+}
+
+#[cfg(test)]
+mod acceleration_tests {
+    use super::dictionaries::InboundRtpStreamStats;
+
+    #[test]
+    fn decoder_acceleration_preserves_absence_and_explicit_false() {
+        for (json, expected) in [
+            (r#"{}"#, None),
+            (r#"{"powerEfficientDecoder":null}"#, None),
+            (r#"{"powerEfficientDecoder":false}"#, Some(false)),
+            (r#"{"powerEfficientDecoder":true}"#, Some(true)),
+        ] {
+            let stats: InboundRtpStreamStats = serde_json::from_str(json).expect("inbound stats");
+            assert_eq!(stats.power_efficient_decoder, expected);
+        }
     }
 }

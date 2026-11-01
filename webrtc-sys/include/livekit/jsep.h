@@ -24,6 +24,7 @@
 #include "api/set_remote_description_observer_interface.h"
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "livekit/rtc_error.h"
+#include "livekit/decoder_acceleration.h"
 #include "rtc_base/ref_count.h"
 #include "rust/cxx.h"
 
@@ -144,7 +145,7 @@ class NativeRtcStatsCollector : public webrtc::RTCStatsCollectorCallback {
 
   void OnStatsDelivered(
       const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) override {
-    on_stats_(std::move(ctx_), report->ToJson());
+    on_stats_(std::move(ctx_), SerializeRtcStats(*report));
   }
 
  private:

@@ -21,12 +21,14 @@ pub mod audio_resampler;
 pub mod audio_track;
 pub mod candidate;
 pub mod data_channel;
+#[cfg(all(test, feature = "test-support"))]
+mod decoder_acceleration_tests;
+#[cfg(all(test, feature = "test-support"))]
+mod decoder_tests;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod desktop_capturer;
 #[cfg(all(test, feature = "test-support"))]
 mod encoder_tests;
-#[cfg(all(test, feature = "test-support"))]
-mod decoder_tests;
 pub mod external_video_decoder;
 pub mod frame_cryptor;
 pub mod helper;

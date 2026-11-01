@@ -65,6 +65,7 @@ fn main() {
     let encoder_tests = env::var_os("CARGO_FEATURE_TEST_SUPPORT").is_some();
     if encoder_tests {
         rust_files.push("src/encoder_tests.rs");
+        rust_files.push("src/decoder_acceleration_tests.rs");
     }
 
     for source in &rust_files {
@@ -97,6 +98,7 @@ fn main() {
         "src/source_aware_video_encoder.cpp",
         "src/passthrough_video_encoder.cpp",
         "src/video_decoder_factory.cpp",
+        "src/decoder_acceleration.cpp",
         "src/external_video_decoder.cpp",
         "src/synthetic_audio_device.cpp",
         "src/adm_proxy.cpp",
@@ -117,6 +119,7 @@ fn main() {
     }
     if encoder_tests {
         builder.file("src/encoder_tests.cpp").file("src/decoder_tests.cpp");
+        builder.file("src/decoder_acceleration_tests.cpp");
     }
 
     let webrtc_dir = webrtc_sys_build::webrtc_dir();
@@ -346,6 +349,26 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=ScreenCaptureKit");
 
             configure_darwin_sysroot(&mut builder);
+
+            // The upstream Objective-C decoder uses ARC for its callback blocks
+            // and frame objects. Keep that flag scoped to this translation unit.
+            let mut h264 = cc::Build::new();
+            h264.cpp(true)
+                .file("src/apple_h264_decoder.mm")
+                .include("include")
+                .include(&webrtc_include)
+                .include(webrtc_include.join("third_party/abseil-cpp"))
+                .include(webrtc_include.join("sdk/objc"))
+                .include(webrtc_include.join("sdk/objc/base"))
+                .flag("-std=c++20")
+                .flag("-stdlib=libc++")
+                .flag("-fobjc-arc")
+                .flag("-Wno-nullability-completeness");
+            for (key, value) in webrtc_sys_build::webrtc_defines() {
+                h264.define(key.as_str(), value.as_deref());
+            }
+            configure_darwin_sysroot(&mut h264);
+            h264.compile("livekit-apple-h264");
 
             builder
                 .define("RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY", None)
