@@ -399,7 +399,8 @@ impl From<rtc::dictionaries::InboundRtpStreamStats> for proto::InboundRtpStreamS
             frames_received: value.frames_received,
             decoder_implementation: value.decoder_implementation,
             playout_id: value.playout_id,
-            power_efficient_decoder: value.power_efficient_decoder,
+            // The legacy protobuf field cannot represent an absent measurement.
+            power_efficient_decoder: value.power_efficient_decoder.unwrap_or_default(),
             frames_assembled_from_multiple_packets: value.frames_assembled_from_multiple_packets,
             total_assembly_time: value.total_assembly_time,
             retransmitted_packets_received: value.retransmitted_packets_received,

@@ -22,6 +22,22 @@
 #include "sdk/objc/native/api/video_decoder_factory.h"
 #include "sdk/objc/native/api/video_encoder_factory.h"
 
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+#include "livekit/apple_h264_decoder.h"
+
+@interface LKMeasuredVideoDecoderFactory : RTC_OBJC_TYPE(RTCDefaultVideoDecoderFactory)
+@end
+
+@implementation LKMeasuredVideoDecoderFactory
+- (id<RTC_OBJC_TYPE(RTCVideoDecoder)>)createDecoder:(RTC_OBJC_TYPE(RTCVideoCodecInfo)*)info {
+  if ([info.name isEqualToString:@"H264"]) {
+    return livekit_ffi::CreateAppleH264Decoder();
+  }
+  return [super createDecoder:info];
+}
+@end
+#endif
+
 namespace livekit_ffi {
 
 std::unique_ptr<webrtc::VideoEncoderFactory> CreateObjCVideoEncoderFactory() {
@@ -32,7 +48,14 @@ std::unique_ptr<webrtc::VideoEncoderFactory> CreateObjCVideoEncoderFactory() {
 }
 
 std::unique_ptr<webrtc::VideoDecoderFactory> CreateObjCVideoDecoderFactory() {
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+  auto* factory = [[LKMeasuredVideoDecoderFactory alloc] init];
+  auto native = webrtc::ObjCToNativeVideoDecoderFactory(factory);
+  [factory release];  // The native adapter retains its Objective-C factory.
+  return native;
+#else
   return webrtc::ObjCToNativeVideoDecoderFactory([[RTC_OBJC_TYPE(RTCDefaultVideoDecoderFactory) alloc] init]);
+#endif
 }
 
 }  // namespace livekit_ffi
