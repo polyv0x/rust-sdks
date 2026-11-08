@@ -130,6 +130,7 @@ async fn round_trip(
     backend: VideoEncoderBackend,
     encrypted: bool,
     raw_pixels: bool,
+    replace_transformers: bool,
 ) {
     let _ = env_logger::builder().is_test(true).try_init();
     let factory = PeerConnectionFactory::default();
@@ -187,7 +188,7 @@ async fn round_trip(
         key_derivation_algorithm: KeyDerivationAlgorithm::HKDF,
     });
     assert!(provider.set_shared_key(0, vec![42; 32]));
-    let sender_cryptor = FrameCryptor::new_for_rtp_sender(
+    let mut sender_cryptor = FrameCryptor::new_for_rtp_sender(
         &factory,
         "synthetic-publisher".into(),
         EncryptionAlgorithm::AesGcm,
@@ -198,7 +199,7 @@ async fn round_trip(
         &factory,
         "synthetic-publisher".into(),
         EncryptionAlgorithm::AesGcm,
-        provider,
+        provider.clone(),
         peers.subscriber.receivers().into_iter().next().expect("video receiver"),
     );
     sender_cryptor.set_enabled(encrypted);
@@ -229,7 +230,12 @@ async fn round_trip(
     let mut bitrate_feedback = raw_pixels;
     let mut raw_frame =
         VideoFrame::new(VideoRotation::VideoRotation0, I420Buffer::new_black(128, 128));
-    while received < 6 || !received_key || !received_delta || !bitrate_feedback {
+    while received < 6
+        || !received_key
+        || !received_delta
+        || !bitrate_feedback
+        || (replace_transformers && submitted < 600)
+    {
         tokio::select! {
             _ = cadence.tick() => {
                 // Alternate a real IDR and its corresponding inter frame. This
@@ -250,6 +256,16 @@ async fn round_trip(
                     }));
                 }
                 submitted += 1;
+                if replace_transformers && submitted % 15 == 0 {
+                    // Reconfigure while transform callbacks can still own
+                    // queued frames. Reset must drain those references before
+                    // the old RTP sender releases its delegate.
+                    sender_cryptor = FrameCryptor::new_for_rtp_sender(
+                        &factory, "synthetic-publisher".into(), EncryptionAlgorithm::AesGcm,
+                        provider.clone(), transceiver.sender(),
+                    );
+                    sender_cryptor.set_enabled(encrypted);
+                }
                 bitrate_feedback |= source.take_rate_control_request().is_some();
                 if submitted % 60 == 0 {
                     eprintln!("{mime}: submitted={submitted}, received={received}, key={received_key}, delta={received_delta}, bitrate={bitrate_feedback}");
@@ -281,7 +297,7 @@ async fn round_trip(
 async fn h264_untagged_publisher_round_trip() {
     time::timeout(
         Duration::from_secs(15),
-        round_trip(EncodedVideoCodec::H264, VideoEncoderBackend::Auto, false, false),
+        round_trip(EncodedVideoCodec::H264, VideoEncoderBackend::Auto, false, false, false),
     )
     .await
     .expect("untagged H.264 publisher stalled");
@@ -294,7 +310,13 @@ async fn h264_encrypted_preencoded_publish_restart() {
     for _ in 0..3 {
         time::timeout(
             Duration::from_secs(15),
-            round_trip(EncodedVideoCodec::H264, VideoEncoderBackend::PreEncoded, true, false),
+            round_trip(
+                EncodedVideoCodec::H264,
+                VideoEncoderBackend::PreEncoded,
+                true,
+                false,
+                false,
+            ),
         )
         .await
         .expect("encrypted H.264 publisher stalled");
@@ -307,7 +329,7 @@ async fn h264_encrypted_preencoded_publish_restart() {
 async fn av1_encrypted_preencoded_round_trip() {
     time::timeout(
         Duration::from_secs(15),
-        round_trip(EncodedVideoCodec::AV1, VideoEncoderBackend::PreEncoded, true, false),
+        round_trip(EncodedVideoCodec::AV1, VideoEncoderBackend::PreEncoded, true, false, false),
     )
     .await
     .expect("encrypted AV1 publisher stalled");
@@ -319,8 +341,22 @@ async fn av1_encrypted_preencoded_round_trip() {
 async fn raw_h264_automatic_encoder_still_publishes() {
     time::timeout(
         Duration::from_secs(15),
-        round_trip(EncodedVideoCodec::H264, VideoEncoderBackend::Auto, false, true),
+        round_trip(EncodedVideoCodec::H264, VideoEncoderBackend::Auto, false, true, false),
     )
     .await
     .expect("raw H.264 publisher stalled");
+}
+
+/// Retires senders with in-flight encrypted frames on the real native queues.
+#[tokio::test]
+#[ignore = "opens local peer-to-peer UDP sockets; run explicitly on a native host"]
+async fn encrypted_video_transformer_replacement_drains_queued_frames() {
+    for codec in [EncodedVideoCodec::H264, EncodedVideoCodec::AV1] {
+        time::timeout(
+            Duration::from_secs(30),
+            round_trip(codec, VideoEncoderBackend::PreEncoded, true, false, true),
+        )
+        .await
+        .expect("encrypted video transformer replacement stalled");
+    }
 }

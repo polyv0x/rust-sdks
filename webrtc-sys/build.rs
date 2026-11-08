@@ -16,6 +16,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::{env, path, process::Command};
 
+#[path = "build/transformer_queue_fix.rs"]
+mod transformer_queue_fix;
+
 fn main() {
     if env::var("DOCS_RS").is_ok() {
         return;
@@ -142,15 +145,11 @@ fn main() {
     ]);
     builder.define("WEBRTC_APM_DEBUG_DUMP", "0");
 
-    println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());
-
     for (key, value) in webrtc_sys_build::webrtc_defines() {
         let value = value.as_deref();
         builder.define(key.as_str(), value);
     }
 
-    // Link webrtc library
-    println!("cargo:rustc-link-lib=static=webrtc");
     match target_os.as_str() {
         "windows" => {
             println!("cargo:rustc-link-lib=dylib=msdmo");
@@ -422,7 +421,11 @@ fn main() {
 
     // TODO(theomonnom) Only add this define when building tests
     builder.define("LIVEKIT_TEST", None);
-    builder.warnings(false).compile("webrtcsys-cxx");
+    builder.warnings(false);
+    let patched_lib = transformer_queue_fix::prepare(&builder, &webrtc_lib);
+    println!("cargo:rustc-link-search=native={}", patched_lib.display());
+    println!("cargo:rustc-link-lib=static=webrtc");
+    builder.compile("webrtcsys-cxx");
 
     for entry in glob::glob("./src/**/*.cpp").unwrap() {
         println!("cargo:rerun-if-changed={}", entry.unwrap().display());
