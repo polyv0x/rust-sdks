@@ -18,10 +18,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <span>
 #include <utility>
 #include <vector>
 
-#include "api/array_view.h"
 #include "api/make_ref_counted.h"
 #include "av1_bitstream.h"
 #include "rtc_base/logging.h"
@@ -32,7 +32,7 @@ namespace {
 constexpr size_t kGcmTagSize = 16;
 constexpr size_t kGcmIvSize = 12;
 
-std::vector<uint8_t> ToVector(webrtc::ArrayView<const uint8_t> data) {
+std::vector<uint8_t> ToVector(std::span<const uint8_t> data) {
   return std::vector<uint8_t>(data.begin(), data.end());
 }
 
@@ -258,7 +258,7 @@ void Av1FrameCryptorTransformer::EncryptFrame(
     return;
   }
 
-  frame->SetData(webrtc::ArrayView<const uint8_t>(output));
+  frame->SetData(output);
   UpdateState(true, webrtc::FrameCryptionState::kOk);
   callback->OnTransformedFrame(std::move(frame));
 }
@@ -290,7 +290,7 @@ void Av1FrameCryptorTransformer::DecryptFrame(
       std::equal(magic.begin(), magic.end(), data_in.end() - magic.size())) {
     std::vector<uint8_t> unencrypted(data_in.begin(),
                                      data_in.end() - magic.size());
-    frame->SetData(webrtc::ArrayView<const uint8_t>(unencrypted));
+    frame->SetData(unencrypted);
     callback->OnTransformedFrame(std::move(frame));
     return;
   }
@@ -347,7 +347,7 @@ void Av1FrameCryptorTransformer::DecryptFrame(
     return;
   }
 
-  frame->SetData(webrtc::ArrayView<const uint8_t>(output));
+  frame->SetData(output);
   UpdateState(false, webrtc::FrameCryptionState::kOk);
   callback->OnTransformedFrame(std::move(frame));
 }

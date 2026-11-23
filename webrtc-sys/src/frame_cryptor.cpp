@@ -193,7 +193,8 @@ KeyProvider::KeyProvider(KeyProviderOptions options) {
   rtc_options.ratchet_salt = ratchet_salt;
   rtc_options.ratchet_window_size = options.ratchet_window_size;
   rtc_options.failure_tolerance = options.failure_tolerance;
-  key_ring_size_ = std::clamp(options.key_ring_size, 1, 255);
+  key_ring_size_ = std::clamp(options.key_ring_size, 1,
+                              static_cast<int32_t>(webrtc::MAX_KEYRING_SIZE));
   rtc_options.key_ring_size = key_ring_size_;
   rtc_options.key_derivation_algorithm =
       KeyDerivationAlgorithmToFrameCryptorKeyDerivationAlgorithm(
@@ -353,7 +354,7 @@ void NativeFrameCryptorObserver::OnEncodedVideoFrame(
     uint32_t timestamp,
     uint32_t ssrc,
     bool key_frame,
-    webrtc::ArrayView<const uint8_t> data) {
+    std::span<const uint8_t> data) {
   rust::Vec<uint8_t> owned_data;
   owned_data.reserve(data.size());
   std::copy(data.begin(), data.end(), std::back_inserter(owned_data));

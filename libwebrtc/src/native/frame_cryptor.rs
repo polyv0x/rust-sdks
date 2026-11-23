@@ -85,7 +85,8 @@ pub struct EncryptedPacket {
 }
 
 pub const DEFAULT_KEY_RING_SIZE: i32 = 16;
-pub const MAX_KEY_RING_SIZE: i32 = 255;
+/// Number of distinct key indices representable in the frame trailer.
+pub const MAX_KEY_RING_SIZE: i32 = u8::MAX as i32 + 1;
 
 #[derive(Clone)]
 pub struct KeyProvider {
@@ -94,11 +95,11 @@ pub struct KeyProvider {
 }
 
 impl KeyProvider {
-    pub fn new(options: KeyProviderOptions) -> Self {
-        let key_ring_size = options.key_ring_size.clamp(1, MAX_KEY_RING_SIZE);
-        let mut sys_options = options;
-        sys_options.key_ring_size = key_ring_size;
-        Self { sys_handle: sys_fc::ffi::new_key_provider(sys_options.into()), key_ring_size }
+    pub fn new(mut options: KeyProviderOptions) -> Self {
+        options.key_ring_size = options.key_ring_size.clamp(1, MAX_KEY_RING_SIZE);
+        let sys_handle = sys_fc::ffi::new_key_provider(options.into());
+        let key_ring_size = sys_handle.key_ring_size();
+        Self { sys_handle, key_ring_size }
     }
 
     pub fn key_ring_size(&self) -> i32 {
@@ -386,6 +387,6 @@ mod tests {
     #[test]
     fn test_key_ring_constants() {
         assert_eq!(DEFAULT_KEY_RING_SIZE, 16);
-        assert_eq!(MAX_KEY_RING_SIZE, 255);
+        assert_eq!(MAX_KEY_RING_SIZE, 256);
     }
 }

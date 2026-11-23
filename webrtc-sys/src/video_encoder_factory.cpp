@@ -827,26 +827,20 @@ class VideoEncoderWrapper final : public webrtc::VideoEncoder,
 std::unique_ptr<webrtc::VideoEncoder> VideoEncoderFactory::Create(
     const webrtc::Environment& env,
     const webrtc::SdpVideoFormat& format) {
-  std::unique_ptr<webrtc::VideoEncoder> encoder;
-  if (format.IsCodecInList(internal_factory_->GetSupportedFormats())) {
-    if (BackendFromFormat(format) == VideoEncoderBackend::PreEncoded) {
-      return internal_factory_->Create(env, format);
-    }
-    encoder = std::make_unique<webrtc::SimulcastEncoderAdapter>(
-        env, internal_factory_.get(), nullptr, format);
-    // A sender's selector can tag the format only after the initial encoder
-    // has been created. Dispatch encoded input synchronously before any pixel
-    // encoder or simulcast adapter can cast/map its native frame buffer.
-    encoder = std::make_unique<SourceAwareVideoEncoder>(
-        std::move(encoder),
-        PassthroughVideoEncoderFactory().Create(env, StripBackendParameter(format)));
+  if (!format.IsCodecInList(internal_factory_->GetSupportedFormats())) {
+    return nullptr;
+  }
+  if (BackendFromFormat(format) == VideoEncoderBackend::PreEncoded) {
+    return internal_factory_->Create(env, format);
   }
 
-  if (encoder && BackendFromFormat(format) != VideoEncoderBackend::PreEncoded) {
-    encoder = std::make_unique<VideoEncoderWrapper>(std::move(encoder));
-  }
-
-  return encoder;
+  auto raw_encoder = std::make_unique<webrtc::SimulcastEncoderAdapter>(
+      env, internal_factory_.get(), nullptr, format);
+  // Dispatch the first frame before the raw encoder's timestamp wrapper filters
+  // encoded buffers. Passthrough preserves the input timestamp itself.
+  return std::make_unique<SourceAwareVideoEncoder>(
+      std::make_unique<VideoEncoderWrapper>(std::move(raw_encoder)),
+      PassthroughVideoEncoderFactory().Create(env, StripBackendParameter(format)));
 }
 
 }  // namespace livekit_ffi

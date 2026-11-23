@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_key_provider_ring_size_clamping() {
-        // key_ring_size > 255 should clamp to 255
+        // The frame trailer can address 256 slots, numbered 0 through 255.
         let options_large = ffi::KeyProviderOptions {
             shared_key: false,
             ratchet_window_size: 16,
@@ -350,8 +350,9 @@ mod tests {
             key_derivation_algorithm: ffi::KeyDerivationAlgorithm::PBKDF2,
         };
         let kp_large = ffi::new_key_provider(options_large);
-        assert_eq!(kp_large.key_ring_size(), 255);
-        assert!(!kp_large.set_key("user1".into(), 255, vec![0u8; 32]));
+        assert_eq!(kp_large.key_ring_size(), 256);
+        assert!(kp_large.set_key("user1".into(), 255, vec![0u8; 32]));
+        assert!(!kp_large.set_key("user1".into(), 256, vec![0u8; 32]));
         assert!(!kp_large.set_key("user1".into(), 300, vec![0u8; 32]));
 
         // key_ring_size <= 0 should clamp to 1

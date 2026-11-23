@@ -141,6 +141,22 @@ mod tests {
         let options = KeyProviderOptions::default();
         assert_eq!(options.key_ring_size, DEFAULT_KEY_RING_SIZE);
         assert_eq!(options.ratchet_window_size, DEFAULT_RATCHET_WINDOW_SIZE);
-        assert_eq!(MAX_KEY_RING_SIZE, 255);
+        assert_eq!(MAX_KEY_RING_SIZE, 256);
+    }
+
+    #[test]
+    fn full_key_ring_keeps_first_and_last_participant_keys_distinct() {
+        let provider = KeyProvider::new(KeyProviderOptions {
+            key_ring_size: 256,
+            ..KeyProviderOptions::default()
+        });
+        let identity = ParticipantIdentity::from("sender");
+        assert_eq!(provider.key_ring_size(), 256);
+        assert!(provider.set_key(&identity, 0, vec![1; 32]));
+        assert!(provider.set_key(&identity, 255, vec![2; 32]));
+        assert_eq!(provider.get_key(&identity, 0), Some(vec![1; 32]));
+        assert_eq!(provider.get_key(&identity, 255), Some(vec![2; 32]));
+        assert!(!provider.set_key(&identity, 256, vec![3; 32]));
+        assert_eq!(provider.get_latest_key_index(), 255);
     }
 }

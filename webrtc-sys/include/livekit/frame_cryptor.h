@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -223,7 +224,7 @@ class NativeFrameCryptorObserver
                            uint32_t timestamp,
                            uint32_t ssrc,
                            bool key_frame,
-                           webrtc::ArrayView<const uint8_t> data);
+                           std::span<const uint8_t> data);
 
  private:
   rust::Box<RtcFrameCryptorObserverWrapper> observer_;

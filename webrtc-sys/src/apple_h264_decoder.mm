@@ -31,7 +31,7 @@
 #import "helpers/UIDevice+RTCDevice.h"
 #endif
 
-#include "api/array_view.h"
+#include <span>
 #include "modules/video_coding/include/video_error_codes.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
@@ -176,10 +176,10 @@ static void LKDecompressionOutputCallback(void *decoderRef,
     return WEBRTC_VIDEO_CODEC_ERROR;
   }
 
+  const std::span annexb(static_cast<const uint8_t*>(inputImage.buffer.bytes),
+                         inputImage.buffer.length);
   webrtc::ScopedCFTypeRef<CMVideoFormatDescriptionRef> inputFormat =
-      webrtc::ScopedCF(
-          webrtc::CreateVideoFormatDescription(webrtc::MakeArrayView(
-              (uint8_t *)inputImage.buffer.bytes, inputImage.buffer.length)));
+      webrtc::ScopedCF(webrtc::CreateVideoFormatDescription(annexb));
   if (inputFormat) {
     // Check if the video format has changed, and reinitialize decoder if
     // needed.
@@ -202,8 +202,7 @@ static void LKDecompressionOutputCallback(void *decoderRef,
   }
   CMSampleBufferRef sampleBuffer = nullptr;
   if (!webrtc::H264AnnexBBufferToCMSampleBuffer(
-          webrtc::MakeArrayView((uint8_t *)inputImage.buffer.bytes,
-                                inputImage.buffer.length),
+          annexb,
           _videoFormat,
           &sampleBuffer,
           _memoryPool)) {

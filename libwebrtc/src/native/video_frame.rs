@@ -148,7 +148,9 @@ macro_rules! impl_to_argb {
 
 #[allow(unused_unsafe)]
 impl NativeBuffer {
-    pub fn external_frame(&self) -> Option<std::sync::Arc<dyn webrtc_sys::external_video_decoder::NativeDecodedFrame>> {
+    pub fn external_frame(
+        &self,
+    ) -> Option<std::sync::Arc<dyn webrtc_sys::external_video_decoder::NativeDecodedFrame>> {
         webrtc_sys::external_video_decoder::ffi::external_frame_owner(&self.sys_handle).frame()
     }
 

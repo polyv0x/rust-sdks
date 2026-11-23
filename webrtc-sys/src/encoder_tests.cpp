@@ -3,6 +3,7 @@
 
 #include "livekit/encoder_tests.h"
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -35,11 +36,15 @@ class Output final : public EncodedImageCallback {
     ++count;
     bytes.assign(image.data(), image.data() + image.size());
     timestamp = image.RtpTimestamp();
+    presentation_timestamp = image.PresentationTimestamp();
     codec_type = codec->codecType;
     return Result(Result::OK);
   }
+  void OnFrameDropped(uint32_t, int, bool) override { ++drops; }
+  int drops = 0;
   int count = 0;
   uint32_t timestamp = 0;
+  std::optional<Timestamp> presentation_timestamp;
   VideoCodecType codec_type = kVideoCodecGeneric;
   std::vector<uint8_t> bytes;
 };
@@ -148,6 +153,7 @@ VideoFrame Encoded(livekit::EncodedVideoCodec codec,
           128, 128, codec, type,
           EncodedImageBuffer::Create(bytes.data(), bytes.size()), keyframe, rates))
       .set_rtp_timestamp(9000)
+      .set_presentation_timestamp(Timestamp::Micros(123456))
       .set_timestamp_us(100000)
       .build();
 }
@@ -175,8 +181,10 @@ void FactoryFirstFrame(bool av1) {
                        livekit::EncodedFrameType::kKey, bytes, request, rates);
   const std::vector<VideoFrameType> key{VideoFrameType::kVideoFrameKey};
   Require(encoder->Encode(frame, &key) == 0, "first encoded frame failed");
-  Require(output.count == 1 && output.timestamp == 9000,
+  Require(output.count == 1 && output.drops == 0 && output.timestamp == 9000,
           "first frame was dropped or not passed through synchronously");
+  Require(output.presentation_timestamp == frame.presentation_timestamp(),
+          "passthrough changed the first frame's presentation timestamp");
   Require(output.codec_type == (av1 ? kVideoCodecAV1 : kVideoCodecH264),
           "passthrough codec mismatch");
   Require(encoder->GetEncoderInfo().implementation_name ==
