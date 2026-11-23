@@ -17,7 +17,7 @@ use std::{
     collections::HashSet,
     env,
     fs::{self, File},
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Seek, Write},
     path,
     process::Command,
 };
@@ -26,10 +26,44 @@ use anyhow::{anyhow, Context, Result};
 use fs2::FileExt;
 use regex::Regex;
 use reqwest::StatusCode;
+use sha2::{Digest, Sha256};
 
 pub const SCRATH_PATH: &str = "livekit_webrtc";
 pub const WEBRTC_TAG: &str = "webrtc-a545de4";
 pub const IGNORE_DEFINES: [&str; 2] = ["CR_CLANG_REVISION", "CR_XCODE_VERSION"];
+
+/// A downloadable WebRTC archive and its optional content pin.
+struct PrebuiltArchive {
+    url: String,
+    sha256: Option<&'static str>,
+}
+
+/// Select the qualified Linux x64 release or the usual upstream artifact.
+fn prebuilt_archive(triple: &str) -> PrebuiltArchive {
+    if triple == "linux-x64-release" {
+        let (sha256, url) = include_str!("../linux-x64-release.sha256")
+            .trim_end()
+            .split_once("  ")
+            .expect("Linux x64 checksum record must contain a SHA-256 digest and a URL");
+        return PrebuiltArchive { url: url.to_owned(), sha256: Some(sha256) };
+    }
+
+    PrebuiltArchive {
+        url: format!("https://github.com/livekit/rust-sdks/releases/download/{WEBRTC_TAG}/webrtc-{triple}.zip"),
+        sha256: None,
+    }
+}
+
+/// Check the downloaded bytes before extracting a pinned archive into the shared cache.
+fn verify_checksum(mut input: impl Read, expected: &str) -> Result<()> {
+    let mut hasher = Sha256::new();
+    io::copy(&mut input, &mut hasher).context("Failed to hash the WebRTC archive")?;
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        return Err(anyhow!("WebRTC archive SHA-256 mismatch: expected {expected}, got {actual}"));
+    }
+    Ok(())
+}
 
 pub fn target_os() -> String {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -89,21 +123,13 @@ pub fn custom_dir() -> Option<path::PathBuf> {
 /// across multiple crates without dependencies constraints
 /// This also has the benefit of not re-downloading the binaries for each crate
 pub fn prebuilt_dir() -> path::PathBuf {
-    let target_dir = scratch::path(SCRATH_PATH);
-    path::Path::new(&target_dir).join(format!(
-        "livekit/{}-{}/{}",
-        webrtc_triple(),
-        WEBRTC_TAG,
-        webrtc_triple()
-    ))
+    let triple = webrtc_triple();
+    let revision = prebuilt_archive(&triple).sha256.unwrap_or(WEBRTC_TAG);
+    scratch::path(SCRATH_PATH).join(format!("livekit/{triple}-{revision}/{triple}"))
 }
 
 pub fn download_url() -> String {
-    format!(
-        "https://github.com/livekit/rust-sdks/releases/download/{}/{}.zip",
-        WEBRTC_TAG,
-        format!("webrtc-{}", webrtc_triple())
-    )
+    prebuilt_archive(&webrtc_triple()).url
 }
 
 /// Used location of libwebrtc depending on whether it's a custom build or not
@@ -209,7 +235,8 @@ pub fn download_webrtc() -> Result<()> {
         return Ok(());
     }
 
-    let mut resp = reqwest::blocking::get(download_url());
+    let source = prebuilt_archive(&webrtc_triple());
+    let mut resp = reqwest::blocking::get(&source.url);
     for attempt in 1..3 {
         let transient = match &resp {
             Ok(resp) => {
@@ -222,7 +249,7 @@ pub fn download_webrtc() -> Result<()> {
         }
         println!("cargo:warning=webrtc download attempt {} failed, retrying in 5s...", attempt);
         std::thread::sleep(std::time::Duration::from_secs(5));
-        resp = reqwest::blocking::get(download_url());
+        resp = reqwest::blocking::get(&source.url);
     }
     let mut resp = resp.context("Failed to send HTTP request to download WebRTC")?;
     if resp.status() != StatusCode::OK {
@@ -235,9 +262,14 @@ pub fn download_webrtc() -> Result<()> {
         .write(true)
         .read(true)
         .create(true)
+        .truncate(true)
         .open(&tmp_path)
         .context("Failed to create temporary file for WebRTC download")?;
     resp.copy_to(&mut file).context("Failed to write WebRTC download to temporary file")?;
+    if let Some(expected) = source.sha256 {
+        file.rewind().context("Failed to rewind WebRTC download for checksum verification")?;
+        verify_checksum(&mut file, expected)?;
+    }
 
     // Extract into a sibling temp dir, then atomically rename into place so concurrent
     // observers see either no `webrtc_dir` or a fully-populated one — never the partially-
@@ -367,5 +399,35 @@ fn host_os() -> Option<&'static str> {
         Some("windows")
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_linux_x64_release_selects_the_pinned_archive() {
+        let archive = prebuilt_archive("linux-x64-release");
+        assert!(archive.url.starts_with("https://github.com/polyv0x/rust-sdks/releases/"));
+        assert!(archive.url.ends_with("/webrtc-linux-x64-release.zip"));
+        let digest = archive.sha256.expect("pinned Linux x64 archive");
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        for triple in
+            ["linux-x64-debug", "linux-arm64-release", "mac-x64-release", "win-x64-release"]
+        {
+            let archive = prebuilt_archive(triple);
+            assert_eq!(archive.sha256, None);
+            assert_eq!(archive.url, format!("https://github.com/livekit/rust-sdks/releases/download/{WEBRTC_TAG}/webrtc-{triple}.zip"));
+        }
+    }
+
+    #[test]
+    fn checksum_verification_rejects_changed_bytes() {
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        verify_checksum(&b"abc"[..], digest).expect("matching bytes");
+        assert!(verify_checksum(&b"abd"[..], digest).is_err());
     }
 }

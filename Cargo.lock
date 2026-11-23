@@ -8733,6 +8733,7 @@ dependencies = [
  "reqwest 0.12.28",
  "scratch",
  "semver",
+ "sha2",
  "zip",
 ]
 

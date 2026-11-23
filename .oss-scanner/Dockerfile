@@ -43,11 +43,17 @@ ENV PATH=/opt/llvm/bin:$PATH \
 # Fetch the prebuilt libwebrtc that webrtc-sys-build would download, into a fixed path outside target/, so an
 # offline `cargo clean` or `--release` build still finds it.
 COPY webrtc-sys/build/src/lib.rs /tmp/webrtc-sys-build.rs
+COPY webrtc-sys/build/linux-x64-release.sha256 /tmp/linux-x64-release.sha256
 RUN set -e; \
-    tag=$(sed -n 's/^pub const WEBRTC_TAG: &str = "\(.*\)";/\1/p' /tmp/webrtc-sys-build.rs); \
-    case "$(dpkg --print-architecture)" in amd64) arch=x64 ;; arm64) arch=arm64 ;; *) exit 1 ;; esac; \
-    curl -fsSL -o /tmp/webrtc.zip \
-      "https://github.com/livekit/rust-sdks/releases/download/$tag/webrtc-linux-$arch-release.zip"; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) arch=x64; read -r sha256 url < /tmp/linux-x64-release.sha256 ;; \
+      arm64) arch=arm64; sha256=''; \
+        tag=$(sed -n 's/^pub const WEBRTC_TAG: &str = "\(.*\)";/\1/p' /tmp/webrtc-sys-build.rs); \
+        url="https://github.com/livekit/rust-sdks/releases/download/$tag/webrtc-linux-arm64-release.zip" ;; \
+      *) exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/webrtc.zip "$url"; \
+    if [ -n "$sha256" ]; then echo "$sha256  /tmp/webrtc.zip" | sha256sum -c -; fi; \
     mkdir -p /opt/libwebrtc; \
     unzip -q /tmp/webrtc.zip -d /opt/libwebrtc; \
     ln -s "/opt/libwebrtc/linux-$arch-release" /opt/libwebrtc/current; \
