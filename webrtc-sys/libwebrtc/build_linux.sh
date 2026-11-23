@@ -80,6 +80,8 @@ apply_patch "$COMMAND_DIR/patches/add_deps.patch"
 apply_patch "$COMMAND_DIR/patches/fix_desktop_capture_compile.patch"
 apply_patch "$COMMAND_DIR/patches/external_audio_source.patch"
 apply_patch "$COMMAND_DIR/patches/fix_pipewire_utils_compile.patch"
+# Backport the video sender queue drain from Mozilla bug 1838080.
+apply_patch "$COMMAND_DIR/patches/drain_video_sender_transform_queue.patch"
 
 # Disable CREL (compact relocations). Chromium's build enables experimental
 # CREL via -Wa,--crel which causes segfaults on aarch64-linux (and is known

@@ -1,0 +1,66 @@
+diff --git a/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc b/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc
+--- a/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc
++++ b/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate.cc
+@@ -34,6 +34,7 @@
+ #include "api/video_codecs/video_codec.h"
+ #include "modules/rtp_rtcp/source/rtp_video_header.h"
+ #include "rtc_base/checks.h"
++#include "rtc_base/event.h"
+ #include "rtc_base/synchronization/mutex.h"
+
+ namespace webrtc {
+@@ -284,6 +285,13 @@
+     MutexLock lock(&sender_lock_);
+     sender_ = nullptr;
+   }
++
++  // OnTransformedFrame cannot enqueue after sender_ is cleared under its
++  // lock. Drain earlier frames while the RTP sender still owns this delegate.
++  RTC_DCHECK(!transformation_queue_->IsCurrent());
++  Event drained;
++  transformation_queue_->PostTask([&drained] { drained.Set(); });
++  drained.Wait(Event::kForever);
+ }
+
+ std::unique_ptr<TransformableVideoFrameInterface> CloneSenderVideoFrame(
+diff --git a/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate_unittest.cc b/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate_unittest.cc
+--- a/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate_unittest.cc
++++ b/modules/rtp_rtcp/source/rtp_sender_video_frame_transformer_delegate_unittest.cc
+@@ -137,6 +137,37 @@
+ }
+
+ TEST_F(RtpSenderVideoFrameTransformerDelegateTest,
++       ResetReleasesQueuedFramesBeforeReturning) {
++  struct TrackedFrame : MockTransformableVideoFrame {
++    explicit TrackedFrame(bool& released) : released(released) {}
++    ~TrackedFrame() override { released = true; }
++    bool& released;
++  };
++  bool queued_released = false;
++  bool late_released = false;
++  auto delegate = make_ref_counted<RTPSenderVideoFrameTransformerDelegate>(
++      &test_sender_, frame_transformer_, /*ssrc=*/1111, /*rid=*/"rid",
++      time_controller_.CreateTaskQueueFactory().get());
++  scoped_refptr<TransformedFrameCallback> callback;
++  EXPECT_CALL(*frame_transformer_, RegisterTransformedFrameSinkCallback)
++      .WillOnce(SaveArg<0>(&callback));
++  EXPECT_CALL(*frame_transformer_, UnregisterTransformedFrameSinkCallback(1111));
++  EXPECT_CALL(test_sender_, SendVideo).Times(0);
++  delegate->Init();
++  ASSERT_TRUE(callback);
++
++  callback->OnTransformedFrame(std::make_unique<TrackedFrame>(queued_released));
++  EXPECT_FALSE(queued_released);
++  delegate->Reset();
++  EXPECT_TRUE(queued_released);
++  callback->OnTransformedFrame(std::make_unique<TrackedFrame>(late_released));
++  EXPECT_TRUE(late_released);
++
++  // Keep the sender and callback references alive through simulated cleanup.
++  time_controller_.AdvanceTime(TimeDelta::Zero());
++}
++
++TEST_F(RtpSenderVideoFrameTransformerDelegateTest,
+        TransformFrameCallsTransform) {
+   auto delegate = make_ref_counted<RTPSenderVideoFrameTransformerDelegate>(
+       &test_sender_, frame_transformer_,
