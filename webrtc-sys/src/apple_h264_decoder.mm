@@ -176,8 +176,8 @@ static void LKDecompressionOutputCallback(void *decoderRef,
     return WEBRTC_VIDEO_CODEC_ERROR;
   }
 
-  const std::span annexb(static_cast<const uint8_t*>(inputImage.buffer.bytes),
-                         inputImage.buffer.length);
+  const std::span<const uint8_t> annexb(
+      static_cast<const uint8_t*>(inputImage.buffer.bytes), inputImage.buffer.length);
   webrtc::ScopedCFTypeRef<CMVideoFormatDescriptionRef> inputFormat =
       webrtc::ScopedCF(webrtc::CreateVideoFormatDescription(annexb));
   if (inputFormat) {
